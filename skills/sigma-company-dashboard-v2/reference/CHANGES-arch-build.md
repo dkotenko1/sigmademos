@@ -50,4 +50,4 @@ previous `main`.
   sample data and never binds. HANDOFF now loads pinned React + SDK and reads
   `window.SigmaPlugin.client`.
 - `scripts/plugin_harness/`: a host simulator for testing a plugin's data path without a
-  Sigma org. Other plugins in `dkotenko1/plugins` using the old pattern are NOT changed here.
+  Sigma org. The same fix was applied to the other 28 plugins in `dkotenko1/plugins` (shim mapping `window.SigmaPlugin.client` onto the globals each file reads; `tabacalera-sellthrough` also rewritten onto the real data API). 30/30 bind in the simulated host.

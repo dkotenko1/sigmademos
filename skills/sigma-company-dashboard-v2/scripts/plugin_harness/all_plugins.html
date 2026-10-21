@@ -1,0 +1,38 @@
+<!doctype html><meta charset="utf-8"><title>running</title><body style="font:12px sans-serif">
+<pre id="out">starting...</pre><iframe id="f" style="width:900px;height:500px;border:1px solid #aaa"></iframe>
+<script>
+const Q=new URLSearchParams(location.search); const SHAPE=Q.get('shape')||'object'; const WAIT=+(Q.get('wait')||3500);
+const out=document.getElementById('out'), f=document.getElementById('f'); const results=[];
+function fake(t,n){ // n rows
+  const a=[]; for(let i=0;i<n;i++){ if(t==='number'||t==='integer') a.push(10+i*7+(i%3)*5);
+   else if(t==='datetime'||t==='date') a.push(new Date(2026,i%12,1+i).toISOString()); else a.push(['Alpha','Bravo','Charlie','Delta','Echo','Foxtrot','Golf','Hotel'][i%8]); } return a; }
+async function run(name){
+  return new Promise(res=>{
+    const seen=[]; let fields=null, errs=[]; const N=8;
+    const onmsg=e=>{ if(e.source!==f.contentWindow) return; const d=e.data||{}; seen.push(d.type);
+      const reply=(type,result)=>f.contentWindow.postMessage({type,result},'*');
+      if(d.type==='wb:plugin:init') reply('wb:plugin:init',{id:'p1',config:{}});
+      if(d.type==='wb:plugin:config:inspector'){ fields=d.args[0]||[]; const cfg={};
+        fields.forEach(x=>{ if(x.type==='element') cfg[x.name]=(SHAPE==='string'?'src':{kind:'element',elementId:'src'});
+          else if(x.type==='column') cfg[x.name]=x.allowMultiple?['c_'+x.name]:'c_'+x.name; });
+        setTimeout(()=>reply('wb:plugin:config:update',{config:cfg}),50); }
+      if(d.type==='wb:plugin:element:subscribe:data'){ const id=d.args[0]; const data={};
+        (fields||[]).filter(x=>x.type==='column').forEach(x=>{ data['c_'+x.name]=fake((x.allowedTypes||['text'])[0],N); });
+        setTimeout(()=>reply('wb:plugin:element:'+id+':data',data),100); }
+      if(d.type==='wb:plugin:element:subscribe:columns'){ const id=d.args[0]; const cols={}; (fields||[]).filter(x=>x.type==='column').forEach(x=>{cols['c_'+x.name]={name:x.name,columnType:(x.allowedTypes||['text'])[0]};}); setTimeout(()=>reply('wb:plugin:element:'+id+':columns',cols),100); }
+    };
+    window.addEventListener('message',onmsg);
+    f.onload=()=>{ try{ f.contentWindow.addEventListener('error',e=>errs.push(e.message)); }catch(e){} };
+    f.src=(Q.get('orig')?'/o/':'/p/')+name+'/index.html?'+Date.now();
+    setTimeout(()=>{ window.removeEventListener('message',onmsg);
+      let txt='', html=''; try{ txt=f.contentDocument.body.innerText||''; html=f.contentDocument.body.innerHTML.length; }catch(e){ txt='(cross-origin)'; }
+      const uniq=[...new Set(seen)];
+      const r={seen:[...new Set(seen)].map(t=>t.replace('wb:plugin:','')).join(','), errlist:errs.join(' | ').slice(0,200), name, init:uniq.includes('wb:plugin:init'), inspector:uniq.includes('wb:plugin:config:inspector'),
+        subscribed:uniq.some(t=>/subscribe:(data|columns)/.test(t)), sample:/sample data|sample\b/i.test(txt), textLen:txt.trim().length, errs:errs.length};
+      r.pass=r.init&&r.inspector&&r.subscribed&&!r.sample&&r.textLen>20&&r.errs===0; res(r); },WAIT);
+  });
+}
+(async()=>{ let names=await (await fetch('/list.json')).json(); if(Q.get('only')) names=Q.get('only').split(',');
+  for(const n of names){ const r=await run(n); results.push(r); out.textContent=results.map(r=>(r.pass?'PASS ':'FAIL ')+r.name+' init='+r.init+' insp='+r.inspector+' sub='+r.subscribed+' sample='+r.sample+' text='+r.textLen+' errs='+r.errs+' seen=['+r.seen+'] '+r.errlist).join('\n'); }
+  document.title='done '+results.filter(r=>r.pass).length+'/'+results.length; })();
+</script>
