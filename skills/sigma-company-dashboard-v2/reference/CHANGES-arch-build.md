@@ -33,3 +33,12 @@ previous `main`.
   not a total.
 - sofi/delta logo assets are not in the repo, so those two cannot be built
   from a clean clone.
+
+## Agent actions and workflows (second PR)
+- Scenario Copilot now has a chat rail on the modeler page and tools to create a
+  scenario, set drivers for one line, submit and approve; Appetite Advisor
+  (config key `advisor`) reads the hero table and saves remediation proposals.
+- Every write tool is `requiresApproval`; agents verify the write target after
+  approve or skip.
+- Visible Scenario audit log and Remediation proposals tables.
+- Companion docs: `COMPANION-SKILLS.md`, `AGENT-ACTIONS.md`, `scripts/preflight.sh`.

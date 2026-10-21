@@ -1018,6 +1018,18 @@ add({"id": "rail-hd1", "kind": "text", "body": "**%s Copilot**" % CFG["name"],
      "style": {"color": B.TEXT_DARK, "backgroundColor": "transparent"},
      "verticalAlign": "center"})
 add({"id": "chat1", "kind": "chat", "agentId": "ag-book"})
+# Page-2 rail for the Scenario Copilot. Without a chat element the agent exists
+# in the spec but nobody can reach it.
+add({"id": "c-rail2", "kind": "container", "spacing": "small", "style": panel()})
+add({"id": "rail-hd2", "kind": "text", "body": "**Scenario Copilot**",
+     "style": {"color": B.TEXT_DARK, "backgroundColor": "transparent"},
+     "verticalAlign": "center"})
+add({"id": "chat2", "kind": "chat", "agentId": "ag-scenario"})
+if CFG.get("advisor"):
+    add({"id": "rail-hd4", "kind": "text", "body": "**%s**" % CFG["advisor"]["name"],
+         "style": {"color": B.TEXT_DARK, "backgroundColor": "transparent"},
+         "verticalAlign": "center"})
+    add({"id": "chat4", "kind": "chat", "agentId": "ag-advisor"})
 add({"id": "btn-newscen", "kind": "button", "text": "+ New scenario",
      "appearance": "filled",
      "actions": [{"id": "a-newscen", "trigger": "on-click",
@@ -1192,15 +1204,52 @@ add({"id": "bar-proj", "kind": "bar-chart",
      "style": panel()})
 
 # --- 6. lifecycle: an append-only submissions log
+# Visible on the modeler page as the scenario AUDIT LOG: who moved which
+# scenario to which status, when, and what the projection was at that moment.
+# Buttons and the Scenario Copilot write the same row shape ("Via" tells them
+# apart), so the log is the single authoritative record an agent can verify
+# against after a write.
+AUDIT_AT = 'DateFormat(Now(), "%Y-%m-%d %H:%M")'
 add({"id": "subs", "kind": "input-table",
      "source": {"kind": "empty", "connectionId": S.CONN_SNOWFLAKE},
-     "inputMode": "view", "name": "Submissions",
+     "inputMode": "view", "name": "Scenario audit log",
      "columns": [
+         {"id": "su-at", "type": "text", "name": "When"},
          {"id": "su-scen", "type": "text", "name": "Scenario"},
          {"id": "su-status", "type": "text", "name": "Status",
           "values": ["Submitted", "Approved"], "pills": "color-by-option"},
-         {"id": "su-by", "type": "text", "name": "By"}],
+         {"id": "su-by", "type": "text", "name": "By"},
+         {"id": "su-via", "type": "text", "name": "Via",
+          "values": ["Button", "Agent"], "pills": "color-by-option"},
+         {"id": "su-proj", "type": "number", "name": "Projected at the time",
+          "format": MONEY_M},
+         {"id": "su-note", "type": "text", "name": "Note"}],
+     "order": ["su-at", "su-scen", "su-status", "su-by", "su-via", "su-proj",
+               "su-note"],
      "style": panel()})
+
+# Remediation proposals: written by the Appetite Advisor (page 1) when a cat /
+# aggregation scenario is at or over its board appetite, read by the Scenario
+# Copilot to turn a proposal into a modeled scenario. Pending until a human acts.
+_ADVISOR = CFG.get("advisor")
+if _ADVISOR:
+    add({"id": "prop", "kind": "input-table",
+         "source": {"kind": "empty", "connectionId": S.CONN_SNOWFLAKE},
+         "inputMode": "view", "name": "Remediation proposals",
+         "columns": [
+             {"id": "pr-at", "type": "text", "name": "When"},
+             {"id": "pr-scen", "type": "text", "name": "Exposure scenario"},
+             {"id": "pr-lob", "type": "text", "name": CO.lab(CFG, "seg_product")},
+             {"id": "pr-action", "type": "text", "name": "Recommended action"},
+             {"id": "pr-chg", "type": "number", "name": "Change to volume %"},
+             {"id": "pr-why", "type": "text", "name": "Rationale"},
+             {"id": "pr-status", "type": "text", "name": "Status",
+              "values": ["Pending", "Applied", "Dismissed"],
+              "pills": "color-by-option"},
+             {"id": "pr-by", "type": "text", "name": "Proposed by"}],
+         "order": ["pr-at", "pr-scen", "pr-lob", "pr-action", "pr-chg", "pr-why",
+                   "pr-status", "pr-by"],
+         "style": panel()})
 
 # Wipes every named scenario, which restores the Coalesce fallback so the
 # modeler reads Base Case again. delete-rows is only legal against a standalone
@@ -1232,7 +1281,14 @@ for bid, label, status, appearance in [
                                                      "value": {"type": "text",
                                                                "value": status}},
                                        "su-by": {"type": "formula",
-                                                 "formula": "CurrentUserEmail()"}}}]}]})
+                                                 "formula": "CurrentUserEmail()"},
+                                       "su-at": {"type": "formula",
+                                                 "formula": AUDIT_AT},
+                                       "su-proj": {"type": "formula",
+                                                   "formula": PROJ},
+                                       "su-via": {"type": "constant",
+                                                  "value": {"type": "text",
+                                                            "value": "Button"}}}}]}]})
 
 header(3, "Member Cohort Builder",
        "Filter the member base into a saveable cohort",
@@ -1400,6 +1456,12 @@ add({"id": "m-title", "kind": "text",
      "style": {"backgroundColor": "transparent", "padding": "none"},
      "verticalAlign": "center"})
 add(text_control("m-scen-name", "NewScenarioName", "Scenario name"))
+# Hidden helper: the Scenario Copilot sets this to the line it is editing, then
+# a formula match writes to that row. A single-row update can NOT be used on the
+# linked assumptions grid -- its row identity includes the pivot value columns
+# ("Unique row <col> not in update row definition", found by running the agent
+# live), and the agent can only supply text it was asked for.
+add(text_control("ctrl-agent-line", "AgentLine", "Line (set by the Copilot)"))
 add({"id": "m-scen-help", "kind": "text",
      "body": '<span style="color: %s">Creates a full set of driver rows for every '
              'product, selects it, and clears this field.</span>' % B.TEXT_MUTED,
@@ -1517,40 +1579,218 @@ agents.append({
          "description": "Open the product detail side panel.",
          "steps": [{"kind": "effect", "effect": "open-overlay",
                     "overlayId": "drawerProduct"}]},
+        {"toolId": "t-plan", "kind": "action",
+         "name": "Open the %s page" % CO.lab(CFG, "modeler_page"),
+         "description": ("Navigate to the %s page. Use only after the user asks "
+                         "to model or plan, and after any product focus is set."
+                         % CO.lab(CFG, "modeler_page")),
+         "steps": [{"kind": "effect", "effect": "navigate",
+                    "target": {"type": "page", "page": "pg2"}}]},
     ]})
 
-agents.append({
-    "id": "ag-scenario", "name": "Scenario Copilot",
-    "description": "Builds and edits rate and growth scenarios.",
-    "instructions": (
-        "You help %s model scenarios for: %s. Drivers are per product: " % (CFG["name"], PRODUCT_NAMES) +
-        "%s, %s, %s. " % (C_GROW, C_YLD, C_CST) +
-        "Projected revenue = baseline * (1 + growth/100) + baseline * (yield - funding) "
-        "/ 10000. Translate the user's description into drivers and explain the revenue "
-        "impact in $M."),
-    "greeting": {"mode": "static",
-                 "message": "Describe a rate or growth scenario and I will set the drivers."},
-    "dataSources": [{"kind": "table", "elementId": "book"}],
-    "tools": [
-        {"toolId": "t-shock", "kind": "action", "name": "Set the rate shock",
-         "description": "Set the parallel rate shock in basis points.",
-         "steps": [{"kind": "effect", "effect": "set-control-value", "control": "RateShock",
-                    "value": {"type": "agent-input",
-                              "inputName": CO.lab(CFG, "shock_label")}}]},
-        {"toolId": "t-growth", "kind": "action", "name": "Set balance growth",
-         "description": "Write a balance-growth percentage into every assumption row.",
-         "steps": [{"kind": "effect", "effect": "update-rows", "tableElementId": "assum",
-                    "whichRows": {"type": "formula", "formula": "True"},
-                    "values": {"ia-growth": {"type": "agent-input",
-                                             "inputName": "Balance growth percentage to apply"}}}]},
-        {"toolId": "t-newscen", "kind": "action", "name": "Create a scenario",
-         "description": "Add a named scenario and make it the active one.",
+_AGENT_CTX = (
+    "Premium/volume data is annual; amounts are in $MM. Always use the business "
+    "names (%s), never raw column names." % PRODUCT_NAMES)
+
+def _wr(tool):
+    """Every tool that WRITES rows is gated behind a user confirmation. An agent
+    that can silently insert/update/delete is a support ticket (sigma-agent-skills
+    agents.md: requiresApproval)."""
+    tool["requiresApproval"] = True
+    return tool
+
+
+def _audit_values(status, via, note_input=None):
+    v = {"su-scen": {"type": "control", "control": "scenarioSelect"},
+         "su-status": {"type": "constant", "value": {"type": "text", "value": status}},
+         "su-by": {"type": "formula", "formula": "CurrentUserEmail()"},
+         "su-at": {"type": "formula", "formula": AUDIT_AT},
+         "su-proj": {"type": "formula", "formula": PROJ},
+         "su-via": {"type": "constant", "value": {"type": "text", "value": via}}}
+    if note_input:
+        v["su-note"] = {"type": "agent-input", "inputName": note_input}
+    return v
+
+
+_SC_TOOLS = [
+    # --- Configure
+    {"toolId": "t-shock", "kind": "action", "name": "Set the shock",
+     "description": ("Set the scenario-wide shock (%s). Allowed values: -100, -50, "
+                     "+0, +50, +100." % CO.lab(CFG, "shock_label")),
+     "steps": [{"kind": "effect", "effect": "set-control-value", "control": "RateShock",
+                "value": {"type": "agent-input",
+                          "inputName": CO.lab(CFG, "shock_label")}}]},
+    {"toolId": "t-switch", "kind": "action", "name": "Switch the active scenario",
+     "description": "Make an existing scenario the active one so the KPIs and chart show it.",
+     "steps": [{"kind": "effect", "effect": "set-control-value",
+                "control": "scenarioSelect",
+                "value": {"type": "agent-input",
+                          "inputName": "Name of the scenario to make active"}}]},
+    # --- Act (writes, approval-gated)
+    _wr({"toolId": "t-newscen", "kind": "action", "name": "Create a scenario",
+         "description": ("Add a named Draft scenario and make it the active one. "
+                         "Call this BEFORE setting any drivers, so the drivers are "
+                         "written to the new scenario."),
          "steps": [{"kind": "effect", "effect": "insert-rows", "tableElementId": "scen2",
                     "values": {"sc-name": {"type": "agent-input",
                                            "inputName": "Name for the new scenario"},
                                "sc-status": {"type": "constant",
-                                             "value": {"type": "text", "value": "Draft"}}}}]},
-    ]})
+                                             "value": {"type": "text", "value": "Draft"}}}},
+                   {"kind": "effect", "effect": "set-control-value",
+                    "control": "scenarioSelect",
+                    "value": {"type": "agent-input",
+                              "inputName": "Name for the new scenario"}}]}),
+    _wr({"toolId": "t-prod-drivers", "kind": "action",
+         "name": "Set drivers for one %s" % CO.lab(CFG, "seg_product").lower(),
+         "description": ("Write the volume growth %%, %s and %s for ONE %s in the "
+                         "ACTIVE scenario. Pass 0 for any driver the user did not "
+                         "change. Call once per %s, after the scenario exists."
+                         % (C_YLD, C_CST, CO.lab(CFG, "seg_product").lower(),
+                            CO.lab(CFG, "seg_product").lower())),
+         "steps": [{"kind": "effect", "effect": "set-control-value",
+                    "control": "AgentLine",
+                    "value": {"type": "agent-input",
+                              "inputName": CO.lab(CFG, "seg_product")}},
+                   {"kind": "effect", "effect": "update-rows", "tableElementId": "assum",
+                    "whichRows": {"type": "formula",
+                                  "formula": "[Product] = [AgentLine] and "
+                                             "[Scenario] = [scenarioSelect]"},
+                    "values": {
+                        "ia-growth": {"type": "agent-input",
+                                      "inputName": "Volume growth percentage"},
+                        "ia-yield": {"type": "agent-input",
+                                     "inputName": "Rate change in basis points"},
+                        "ia-fund": {"type": "agent-input",
+                                    "inputName": "Loss/cost trend change in basis points"},
+                        "ia-note": {"type": "agent-input",
+                                    "inputName": "Rationale in one sentence"}}}]}),
+    _wr({"toolId": "t-growth", "kind": "action", "name": "Set growth on every row",
+         "description": ("Write one volume-growth percentage into every assumption "
+                         "row of the active scenario. Use only for a portfolio-wide "
+                         "change; prefer the per-%s tool otherwise."
+                         % CO.lab(CFG, "seg_product").lower()),
+         "steps": [{"kind": "effect", "effect": "update-rows", "tableElementId": "assum",
+                    "whichRows": {"type": "formula", "formula": "True"},
+                    "values": {"ia-growth": {"type": "agent-input",
+                                             "inputName": "Growth percentage to apply"}}}]}),
+    _wr({"toolId": "t-submit", "kind": "action", "name": "Submit the active scenario",
+         "description": ("Record the ACTIVE scenario as Submitted in the audit log. "
+                         "Only after the drivers are set and the user asked to submit."),
+         "steps": [{"kind": "effect", "effect": "insert-rows", "tableElementId": "subs",
+                    "values": _audit_values("Submitted", "Agent",
+                                            "One-sentence submission note")}]}),
+    _wr({"toolId": "t-approve", "kind": "action", "name": "Approve the active scenario",
+         "description": ("Record the ACTIVE scenario as Approved in the audit log. "
+                         "Only when the user explicitly asks to approve."),
+         "steps": [{"kind": "effect", "effect": "insert-rows", "tableElementId": "subs",
+                    "values": _audit_values("Approved", "Agent",
+                                            "One-sentence approval note")}]}),
+]
+if CFG.get("advisor"):
+    _SC_TOOLS.append(
+        {"toolId": "t-show-prop", "kind": "action", "name": "Show remediation proposals",
+         "description": "Scroll to the remediation proposals table.",
+         "steps": [{"kind": "effect", "effect": "navigate",
+                    "target": {"type": "element", "element": "prop"}}]})
+
+agents.append({
+    "id": "ag-scenario", "name": "Scenario Copilot",
+    "description": "Builds, edits, submits and approves what-if scenarios.",
+    "instructions": (
+        "You help %s model scenarios. " % CFG["name"] + _AGENT_CTX + " " +
+        "Drivers are per %s: %s, %s, %s. " % (CO.lab(CFG, "seg_product").lower(),
+                                              C_GROW, C_YLD, C_CST) +
+        "Projected = baseline * (1 + growth/100) + baseline * (rate change - "
+        "trend change) / 10000. "
+        "HOW TO WORK: (1) For a new what-if, create the scenario first, then set "
+        "drivers once per %s the user mentioned, then report the projected vs "
+        "baseline impact in $M from the Book table. (2) Submit/approve only when "
+        "asked, and never approve a scenario you just submitted unless the user "
+        "says so. (3) Every write needs the user's confirmation. (4) After EVERY "
+        "write, whether it was approved OR skipped, query Assumptions, Book and the "
+        "Scenario audit log BEFORE saying what changed, and report the rows that "
+        "are actually there. Never say 'saved' or 'nothing changed' from the tool "
+        "result alone, and never infer counts from the conversation. "
+        % CO.lab(CFG, "seg_product").lower() +
+        ("Pending remediation proposals are in the Remediation proposals table: "
+         "when asked to model a proposal, create a scenario from it and set the "
+         "named line's volume growth to the proposed change. "
+         if CFG.get("advisor") else "") +
+        CO.vocab(CFG, "econ") + " Be concise and quantitative."),
+    "greeting": {"mode": "static",
+                 "message": "Describe a what-if (for example a growth, rate or "
+                            "trend change on one line) and I will build the scenario."},
+    "dataSources": [{"kind": "table", "elementId": "book"},
+                    {"kind": "table", "elementId": "assum"},
+                    {"kind": "table", "elementId": "scen2"},
+                    {"kind": "table", "elementId": "subs"}]
+                   + ([{"kind": "table", "elementId": "prop"}]
+                      if CFG.get("advisor") else []),
+    "tools": _SC_TOOLS})
+
+if CFG.get("advisor"):
+    _adv = CFG["advisor"]
+    agents.append({
+        "id": "ag-advisor", "name": _adv["name"],
+        "description": _adv["description"],
+        "instructions": (
+            _adv["instructions"] + " " + _AGENT_CTX + " " +
+            "HOW TO WORK: read the Cat Appetite Grid first and compute "
+            "utilization as Net PML / Appetite. Only propose remediation for "
+            "scenarios at or above 95%% of appetite, naming the exposure "
+            "scenario, the line, a specific volume change %% and the figures "
+            "that justify it. Saving a proposal needs the user's confirmation. "
+            "After the confirmation is answered, whether approved OR skipped, "
+            "query the Remediation proposals table BEFORE saying anything about "
+            "what was saved, and report the rows actually there. Proposals are PENDING -- applying one is done by the "
+            "Scenario Copilot on the %s page. " % CO.lab(CFG, "modeler_page") +
+            CO.vocab(CFG, "econ") + " Be concise and quantitative."),
+        "greeting": {"mode": "generated",
+                     "prompt": "Greet the user in one short line, then name the "
+                               "scenario furthest over (or closest to) its appetite "
+                               "with its utilization %, and offer to propose a fix."},
+        "dataSources": ([{"kind": "table", "elementId": "tbl-hero"}]
+                        if HERO_TBL else []) + [
+            {"kind": "table", "elementId": "tbl-lb"},
+            {"kind": "table", "elementId": "prop"}],
+        "tools": [
+            {"toolId": "t-adv-focus", "kind": "action",
+             "name": "Focus a %s" % CO.lab(CFG, "seg_product").lower(),
+             "description": "Filter the command center to one line before discussing it.",
+             "steps": [{"kind": "effect", "effect": "set-control-value",
+                        "control": "ProductFilter",
+                        "value": {"type": "agent-input",
+                                  "inputName": "The line to focus on"}}]},
+            _wr({"toolId": "t-adv-propose", "kind": "action",
+                 "name": "Save a remediation proposal",
+                 "description": ("Save one PENDING remediation proposal for an "
+                                 "exposure scenario at or near its appetite limit."),
+                 "steps": [{"kind": "effect", "effect": "insert-rows",
+                            "tableElementId": "prop",
+                            "values": {
+                                "pr-at": {"type": "formula", "formula": AUDIT_AT},
+                                "pr-scen": {"type": "agent-input",
+                                            "inputName": "Exposure scenario being remediated"},
+                                "pr-lob": {"type": "agent-input",
+                                           "inputName": CO.lab(CFG, "seg_product")},
+                                "pr-action": {"type": "agent-input",
+                                              "inputName": "Recommended action"},
+                                "pr-chg": {"type": "agent-input",
+                                           "inputName": "Change to volume percentage (negative to reduce)"},
+                                "pr-why": {"type": "agent-input",
+                                           "inputName": "Rationale with the utilization figures"},
+                                "pr-status": {"type": "constant",
+                                              "value": {"type": "text", "value": "Pending"}},
+                                "pr-by": {"type": "formula",
+                                          "formula": "CurrentUserEmail()"}}}]}),
+            {"toolId": "t-adv-plan", "kind": "action",
+             "name": "Open the %s page" % CO.lab(CFG, "modeler_page"),
+             "description": ("Navigate to the %s page so the proposal can be "
+                             "modeled. Use only after a proposal is saved."
+                             % CO.lab(CFG, "modeler_page")),
+             "steps": [{"kind": "effect", "effect": "navigate",
+                        "target": {"type": "page", "page": "pg2"}}]},
+        ]})
 
 agents.append({
     "id": "ag-cohort", "name": "Cohort Copilot",
@@ -1573,6 +1813,7 @@ agents.append({
         for _, cid, label, _ in COHORT_FILTERS
     ] + [
         {"toolId": "t-c-save", "kind": "action", "name": "Save the cohort",
+         "requiresApproval": True,
          "description": "Persist the current cohort to the Saved Cohorts table.",
          "steps": [{"kind": "effect", "effect": "insert-rows", "tableElementId": "it-cohorts",
                     "values": {
@@ -1686,6 +1927,7 @@ __NOTIF_CARDS__
   <Container elementId="c-rail1" type="grid" gridColumn="19 / 25" gridRow="25 / 73" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
     <Element elementId="rail-hd1" gridColumn="1 / 25" gridRow="1 / 3"/>
     <Element elementId="chat1" gridColumn="1 / 25" gridRow="3 / 30"/>
+__ADVISOR_RAIL__
   </Container>
 </Page>
 <Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" id="pg2">
@@ -1699,12 +1941,18 @@ __STMT_BUTTON2__
   <Element elementId="btn-submit" gridColumn="15 / 18" gridRow="6 / 9"/>
   <Element elementId="btn-approve" gridColumn="18 / 21" gridRow="6 / 9"/>
   <Element elementId="btn-newscen" gridColumn="21 / 25" gridRow="6 / 9"/>
-  <Element elementId="mk-rev" gridColumn="1 / 9" gridRow="9 / 15"/>
-  <Element elementId="mk-delta" gridColumn="9 / 17" gridRow="9 / 15"/>
-  <Element elementId="mk-pct" gridColumn="17 / 25" gridRow="9 / 15"/>
-  <Element elementId="bar-proj" gridColumn="1 / 25" gridRow="15 / 33"/>
+  <Element elementId="mk-rev" gridColumn="1 / 7" gridRow="9 / 15"/>
+  <Element elementId="mk-delta" gridColumn="7 / 13" gridRow="9 / 15"/>
+  <Element elementId="mk-pct" gridColumn="13 / 17" gridRow="9 / 15"/>
+  <Element elementId="bar-proj" gridColumn="1 / 17" gridRow="15 / 33"/>
+  <Container elementId="c-rail2" type="grid" gridColumn="17 / 25" gridRow="9 / 33" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
+    <Element elementId="rail-hd2" gridColumn="1 / 25" gridRow="1 / 3"/>
+    <Element elementId="chat2" gridColumn="1 / 25" gridRow="3 / 25"/>
+  </Container>
   <Element elementId="btn-reset-scen" gridColumn="20 / 25" gridRow="33 / 35"/>
   <Element elementId="assum" gridColumn="1 / 25" gridRow="35 / 57"/>
+  <Element elementId="subs" gridColumn="1 / 25" gridRow="57 / 69"/>
+__PROP_SLOT__
 </Page>
 <Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" id="pg3">
   <Container elementId="c-hdr3" type="grid" gridColumn="1 / 25" gridRow="1 / 4" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
@@ -1786,9 +2034,9 @@ __STMT_BUTTON3__
   <Element elementId="book" gridColumn="17 / 25" gridRow="25 / 37"/>
   <Element elementId="tbl-notif" gridColumn="9 / 17" gridRow="49 / 61"/>
   <Element elementId="ctrl-state" gridColumn="9 / 17" gridRow="73 / 76"/>
+  <Element elementId="ctrl-agent-line" gridColumn="1 / 9" gridRow="76 / 79"/>
 
   <Element elementId="scen2" gridColumn="17 / 25" gridRow="49 / 61"/>
-  <Element elementId="subs" gridColumn="1 / 9" gridRow="61 / 73"/>
   <Element elementId="tbl-sku" gridColumn="1 / 9" gridRow="37 / 49"/>
   <Element elementId="tbl-lbc" gridColumn="9 / 17" gridRow="37 / 49"/>
   <Element elementId="ctrl-card" gridColumn="17 / 25" gridRow="37 / 40"/>
@@ -1817,6 +2065,18 @@ for _i, _k in enumerate([_p[0] for _p in PRODUCTS]):
 LAYOUT = LAYOUT.replace("__HERO_TBL_SLOT__",
                         ('  <Element elementId="tbl-hero" gridColumn="17 / 25"'
                          ' gridRow="61 / 73"/>') if HERO_TBL else "")
+
+# Advisor chat sits under the Copilot in the page-1 rail (inner rows must stay
+# within the 48 rows the rail is granted: end 49 -> 48 <= 48).
+LAYOUT = LAYOUT.replace(
+    "__ADVISOR_RAIL__",
+    ('    <Element elementId="rail-hd4" gridColumn="1 / 25" gridRow="31 / 33"/>\n'
+     '    <Element elementId="chat4" gridColumn="1 / 25" gridRow="33 / 49"/>')
+    if CFG.get("advisor") else "")
+LAYOUT = LAYOUT.replace(
+    "__PROP_SLOT__",
+    '  <Element elementId="prop" gridColumn="1 / 25" gridRow="69 / 81"/>'
+    if CFG.get("advisor") else "")
 
 LAYOUT = LAYOUT.replace("__PRODUCT_CARDS__", "\n".join(_CARD_ROWS))
 

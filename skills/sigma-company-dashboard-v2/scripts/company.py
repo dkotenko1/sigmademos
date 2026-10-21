@@ -4148,6 +4148,19 @@ ARCH = {
          "aggregate appetite were declined this week",
          "5h ago", "Construction Underwriting", 31, "submissions declined"),
     ],
+    # Page-1 specialist: reads the cat/RDS appetite grid, proposes remediation.
+    "advisor": {
+        "name": "Appetite Advisor",
+        "description": "Finds cat and RDS scenarios near or over board appetite and proposes remediation.",
+        "instructions": ("You are the catastrophe and aggregation appetite "
+                         "advisor for Arch Insurance underwriting. You watch "
+                         "net PML against the board appetite limit for each "
+                         "cat and RDS scenario (Florida wind, Gulf Coast "
+                         "hurricane, California earthquake, cyber ransomware "
+                         "and cloud-outage RDS, terrorism, marine, "
+                         "construction latent defect, A&H event accident) "
+                         "and recommend where to trim or reprice."),
+    },
     "agent": ("You are an analyst covering the Arch Insurance underwriting "
               "portfolio: a global specialty insurer writing Property & Cat, "
               "Casualty, Professional Lines, Marine & Cargo, Cyber, "
