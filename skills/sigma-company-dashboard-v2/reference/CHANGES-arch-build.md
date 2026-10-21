@@ -42,3 +42,12 @@ previous `main`.
   approve or skip.
 - Visible Scenario audit log and Remediation proposals tables.
 - Companion docs: `COMPANION-SKILLS.md`, `AGENT-ACTIONS.md`, `scripts/preflight.sh`.
+
+## Plugin SDK loading (found 2026-10-21)
+- The authoring pattern in HANDOFF section 9 loaded the SDK without React and looked up
+  `window.sigmaComputing.plugin.client`. No SDK version defines that global and the browser
+  build throws without a React global, so a plugin written this way always falls back to
+  sample data and never binds. HANDOFF now loads pinned React + SDK and reads
+  `window.SigmaPlugin.client`.
+- `scripts/plugin_harness/`: a host simulator for testing a plugin's data path without a
+  Sigma org. Other plugins in `dkotenko1/plugins` using the old pattern are NOT changed here.
