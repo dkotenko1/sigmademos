@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>Sigma host simulator</title>
+<body style="font-family:sans-serif"><div id="log" style="font-size:12px;white-space:pre-wrap;height:90px;overflow:auto;border:1px solid #ccc;padding:4px"></div>
+<iframe id="f" src="plugin.html" style="width:1000px;height:520px;border:1px solid #999"></iframe>
+<script>
+// Plays the host half of the plugin protocol the SDK speaks over postMessage.
+var log=function(m){document.getElementById('log').textContent+=m+'\n';};
+var COLS={h0:["Cyber: widespread ransomware RDS","Gulf Coast hurricane (1-in-100)","Cyber: cloud-provider outage RDS","Florida windstorm (1-in-100)","California earthquake (1-in-250)","A&H: mass-gathering event accident","Northeast windstorm (1-in-100)"],
+ h1:["Cyber","Property & Cat","Cyber","Property & Cat","Property & Cat","Accident & Health","Property & Cat"],
+ h2:[540,980,610,1240,760,180,410], h3:[210,360,190,412,285,70,150], h4:[195,340,200,450,330,120,240], h5:[3100,2710,2900,3150,1480,4200,1920]};
+var f=document.getElementById('f');
+window.addEventListener('message',function(e){
+  if(e.source!==f.contentWindow) return; var d=e.data||{}; log('plugin -> host: '+d.type);
+  var reply=function(type,result){f.contentWindow.postMessage({type:type,result:result},'*');};
+  if(d.type==='wb:plugin:init') reply('wb:plugin:init',{id:'plugin-1',config:{source:{kind:'element',elementId:'tbl-hero'},scen:'h0',cls:'h1',gross:'h2',net:'h3',lim:'h4',acc:'h5'}});
+  if(d.type==='wb:plugin:element:subscribe:data'){ var id=d.args[0]; log('host: subscribed to '+id+' (live spec sends an object, SDK got a '+typeof id+')'); setTimeout(function(){reply('wb:plugin:element:'+id+':data',COLS);},200); }
+});
+</script></body>

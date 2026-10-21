@@ -42,6 +42,15 @@ claiming a company hasn't been built yet.
 you are debugging or modifying the builder itself. Those scripts are never
 edited per prospect — reading them for a new company is wasted tokens.
 
+## Always load the official Sigma skills
+
+Every build session also loads the official skills from
+<https://github.com/sigmacomputing/sigma-agent-skills> (`sigma-skills:*`) and
+runs `scripts/preflight.sh`. Read `reference/COMPANION-SKILLS.md` for the rule
+and `reference/AGENT-ACTIONS.md` before changing agents, tools or writeback;
+that file records what was verified live and the defects found by running the
+agents.
+
 ## The one thing to internalize
 
 **`scripts/company.py` is the only file that changes per prospect.**

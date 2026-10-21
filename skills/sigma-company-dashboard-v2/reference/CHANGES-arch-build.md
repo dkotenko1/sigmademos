@@ -33,3 +33,21 @@ previous `main`.
   not a total.
 - sofi/delta logo assets are not in the repo, so those two cannot be built
   from a clean clone.
+
+## Agent actions and workflows (second PR)
+- Scenario Copilot now has a chat rail on the modeler page and tools to create a
+  scenario, set drivers for one line, submit and approve; Appetite Advisor
+  (config key `advisor`) reads the hero table and saves remediation proposals.
+- Every write tool is `requiresApproval`; agents verify the write target after
+  approve or skip.
+- Visible Scenario audit log and Remediation proposals tables.
+- Companion docs: `COMPANION-SKILLS.md`, `AGENT-ACTIONS.md`, `scripts/preflight.sh`.
+
+## Plugin SDK loading (found 2026-10-21)
+- The authoring pattern in HANDOFF section 9 loaded the SDK without React and looked up
+  `window.sigmaComputing.plugin.client`. No SDK version defines that global and the browser
+  build throws without a React global, so a plugin written this way always falls back to
+  sample data and never binds. HANDOFF now loads pinned React + SDK and reads
+  `window.SigmaPlugin.client`.
+- `scripts/plugin_harness/`: a host simulator for testing a plugin's data path without a
+  Sigma org. The same fix was applied to the other 28 plugins in `dkotenko1/plugins` (shim mapping `window.SigmaPlugin.client` onto the globals each file reads; `tabacalera-sellthrough` also rewritten onto the real data API). 30/30 bind in the simulated host.

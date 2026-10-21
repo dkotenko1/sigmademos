@@ -605,9 +605,13 @@ way `decomposition-tree` was.
 
 ### Authoring pattern
 ```html
-<script src="https://unpkg.com/@sigmacomputing/plugin"></script>
+<!-- The SDK's browser (UMD) build calls React.createContext when it loads, so React
+     must be on the page first. It exposes window.SigmaPlugin; NO SDK version defines
+     window.sigmaComputing (checked 2026-10-21). Pin both. -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/@sigmacomputing/plugin@1.3.2/dist/umd/sigmacomputing-plugin.umd.js"></script>
 ...
-var client = window.sigmaComputing.plugin.client;
+var client = (window.SigmaPlugin && window.SigmaPlugin.client) || null;
 client.config.configureEditorPanel([
   {name:'source', type:'element'},
   {name:'x', type:'column', source:'source', allowedTypes:['number'], label:'X'}
@@ -623,6 +627,10 @@ Rules:
 - **No infinite animation loop** or headless PNG export never reaches idle.
 - Inline SVG needs an explicit `xmlns`.
 - Always ship a `synth()` fallback so the plugin looks right unbound.
+- **Test the data path with `scripts/plugin_harness/`**: exports and signed-out browsers never
+  deliver plugin data, so a plugin that reads a global the SDK never sets (as the old
+  `window.sigmaComputing` lookup did) looks fine and silently shows sample data forever.
+- Host plugins on GitHub Pages (jsDelivr serves `.html` as text/plain), not the jsDelivr URL below.
 - **Register with `POST /v2/plugins` using the jsDelivr URL**, not localhost:
   `{name, url: "https://cdn.jsdelivr.net/gh/cmiller-coder/millersigma@main/plugins/<folder>/index.html", description, type:"element"}`.
   The file must already be pushed to `main` on the public repo before you
