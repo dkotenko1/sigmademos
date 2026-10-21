@@ -16,6 +16,7 @@ Usage:  python3 build_sofi.py [verify|create|update <workbookId>]
 import json
 import os
 import pathlib
+import re
 import sys
 
 import brand as B
@@ -26,6 +27,16 @@ import company as CO
 CFG = CO.COMPANIES[os.environ.get("COMPANY", "sofi")]
 # Modeler driver column names. Used as BOTH the display label and the formula
 # reference key inside the assumptions input table -- see the comment there.
+# The modeler's baseline/projected columns are INPUT-TABLE column names, which
+# double as formula reference keys -- so they are a contract, and renaming one
+# means renaming every reference in tandem (the trap HANDOFF section 8 records
+# being hit four times). They were hardcoded "Baseline Revenue" / "Projected
+# Revenue", which mislabels any company whose headline metric is not revenue:
+# on a savings model it reads as the Delta/NVIDIA spread trap. Derived here,
+# then used for BOTH the display name and every formula that references it.
+_REV_BASE = CO.lab(CFG, "kpi_revenue").split(" (")[0]
+C_BREV = "Baseline " + _REV_BASE[0].lower() + _REV_BASE[1:]
+C_PREV = "Projected " + _REV_BASE[0].lower() + _REV_BASE[1:]
 C_VOL = CO.lab(CFG, "col_volume")
 C_GROW = CO.lab(CFG, "col_growth")
 C_YLD = CO.lab(CFG, "col_yield")
@@ -50,7 +61,13 @@ if not REPORT_ID_FILE.exists() and CFG["key"] == "sofi":
 
 MONEY_B = {"kind": "number", "formatString": "$,.2f", "decimalSymbol": ".",
            "digitGroupingSymbol": ",", "digitGroupingSize": [3], "currencySymbol": "$"}
-MONEY_M = {"kind": "number", "formatString": "$,.0f", "currencySymbol": "$"}
+# The SPREAD family (net revenue, contribution, projected, uplift). Its
+# precision is configurable per company -- see CO.money_dp.
+MONEY_M = {"kind": "number", "formatString": "$,.%df" % CO.money_dp(CFG),
+           "currencySymbol": "$"}
+# The VOLUME family. Always whole units: these are the largest numbers on
+# the page and decimals on them are noise, whatever the spread needs.
+MONEY_V = {"kind": "number", "formatString": "$,.0f", "currencySymbol": "$"}
 PCT = {"kind": "number", "formatString": ".2%"}
 PCT1 = {"kind": "number", "formatString": ".1%"}
 # compact currency: 123092071 -> $123.1M
@@ -58,6 +75,23 @@ MONEY_C = {"kind": "number", "formatString": "$,.3s", "currencySymbol": "$"}
 NUM0 = {"kind": "number", "formatString": ",.0f", "digitGroupingSymbol": ",",
         "digitGroupingSize": [3]}
 NUM1 = {"kind": "number", "formatString": ",.1f"}
+
+# product_cards_sql and product_skus_sql ALWAYS store volume as bal_base / 1000
+# (i.e. in $B), regardless of the company's own display scale. Converting that
+# for display needs *1000 back to $MM and then a divide by the scale's divisor.
+# The old expression divided by `scale["div"] // 1000 or 1`, which is 1 for any
+# company whose scale is $M -- so the value stayed in $B and every product card
+# rendered "$0M" (SimplifyVMS: 0.338 formatted as $,.0f). Reported as "why are
+# the $ values in the Program Office tab $0M".
+_SC = CO.scale(CFG)
+MONEY_SC = {"kind": "number", "formatString": "$,.%df" % _SC["dp"],
+            "suffix": _SC["suffix"], "currencySymbol": "$"}
+VOL_LABEL = "%s ($%s)" % (CFG["volume_noun"].title(), _SC["suffix"])
+
+
+def to_scale(expr):
+    """A stored-$B volume expression, rendered in the company's own magnitude."""
+    return "(%s) * 1000 / %d" % (expr, _SC["div"])
 
 LB = CFG.get("base_table", "Loan Book")
 RH = "Rate History"
@@ -123,7 +157,7 @@ MP_COLS = ["Member ID", "Primary Product", "Age Band", "Region", "Credit Band",
            "Engagement", "Engagement Order", "Total Balances", "Annual Revenue",
            "Attrition Propensity"]
 PC_COLS = ["Product", "Product Order", "Tagline", "Balances $B", "Rate Label",
-           "Rate Value", "Members M", "Goal Pct", "Status"]
+           "Rate Value", "Members M", "Goal Pct", "Status", "Unit Count"]
 NB_COLS = ["Step", "Step Order", "Amount", "Step Type"]
 NT_COLS = ["Alert Key", "Alert Order", "Severity", "Title", "Body", "Age",
            "Owner", "Impact"]
@@ -165,25 +199,29 @@ def tight(style):
     return dict(style)
 
 
+# ---------------------------------------------------------------------------
+# API drift, discovered 2026-09-29 against the live paperbricks (US prod) API
+# and confirmed against the published OpenAPI (2.0.0+20260922). Five renames,
+# all one coherent change: the alignment enums were normalised to CSS-style
+# words and two nested `id` keys became explicit `columnId`. Every one of these
+# surfaced as a MASKED `Invalid kind: "<kind>"` on the element, not as a field
+# error, so bisect field-by-field rather than trusting the message.
+#
+#   text.verticalAlign      start|middle|end  ->  top|center|bottom
+#   kpi.layout.anchor       start|middle|end  ->  left|center|right
+#                           (vertical placement is now a separate
+#                            `verticalAnchor`: top|center|bottom)
+#   tabBar.alignment        start|end         ->  left|center|right|justify
+#   region-map .region.id             ->  .region.columnId
+#   pivot-table .rowsBy[].id / .columnsBy[].id  ->  .columnId
+#
+# region-map and pivot-table are NOT retired kinds -- both are still in the
+# schema; a minimal probe of either also fails, which made them look removed.
+# ---------------------------------------------------------------------------
+
+
 def title(text, size=14):
     return {"text": text, "color": B.TEXT_DARK, "fontWeight": "bold", "fontSize": size}
-
-
-def stmt_button(idx):
-    """The statement-report button, for a header's `buttons` list. Was page-1
-    only; every page gets it now so the report is reachable regardless of
-    which page a viewer lands on. Element/action ids are suffixed by page
-    index -- ids are workbook-unique, so "btn-stmt" can't be reused as-is."""
-    if not (CO.has_statement(CFG) and REPORT_ID_FILE.exists()
-            and REPORT_ID_FILE.read_text().strip()):
-        return []
-    return [{"id": "btn-stmt%d" % idx, "kind": "button",
-             "text": CO.statement(CFG, "button_label"), "appearance": "filled",
-             "actions": [{"id": "a-stmt%d" % idx, "trigger": "on-click",
-                          "effects": [{"effect": "open-document",
-                                       "documentId": REPORT_ID_FILE.read_text().strip(),
-                                       "documentType": "report",
-                                       "openTarget": "_blank"}]}]}]
 
 
 def header(idx, head, subtitle, buttons, titles=True):
@@ -212,11 +250,11 @@ def header(idx, head, subtitle, buttons, titles=True):
         add({"id": "ttl%d" % idx, "kind": "text",
              "body": '# **<span style="color: #FFFFFF">%s</span>**' % head,
              "style": {"backgroundColor": "transparent", "padding": "none"},
-             "verticalAlign": "end"})
+             "verticalAlign": "bottom"})
         add({"id": "sub%d" % idx, "kind": "text",
              "body": '<span style="color: #C7E4F7">%s</span>' % subtitle,
              "style": {"backgroundColor": "transparent", "padding": "none"},
-             "verticalAlign": "start"})
+             "verticalAlign": "top"})
     for b in buttons:
         add(b)
 
@@ -257,6 +295,12 @@ def kpi_card(key, label, cur, pri, fmt, ga, gb, spark):
     keeps catching -- two bare numbers side by side is not a comparative KPI.
     Titles and period labels are the kpi-chart's OWN native `name` (colourable
     white), never separate text tiles or SVG images."""
+    # The Prior tile prints WHITE values on `gb`, so a light brand accent makes
+    # it unreadable (SimplifyVMS: 1.57:1 on their real #A5D3FF, 2.49:1 on their
+    # mint). Darken only as far as legibility requires, preserving hue. Shared
+    # behaviour, so this helps every company with a light accent -- not a
+    # per-company workaround.
+    gb = B.ensure_white_readable(gb)
     add({"id": "c-%s" % key, "kind": "container", "spacing": "small",
          "style": {"borderRadius": "round", "padding": "none"},
          "backgroundImage": {"source": {"kind": "url", "url": B.card_gradient(ga, gb)},
@@ -271,7 +315,7 @@ def kpi_card(key, label, cur, pri, fmt, ga, gb, spark):
          "comparison": {"display": "delta", "colorGood": "#CDEBB8",
                         "colorBad": "#FFCFC7", "fontSize": 13},
          "name": {"text": label, "color": "#FFFFFF", "fontSize": 12},
-         "layout": {"anchor": "middle"},
+         "layout": {"anchor": "center"},
          # kpi-chart can't be made transparent -- backgroundColor:"transparent"
          # is rejected (see build_sofi.py history), and omitting the field
          # renders OPAQUE WHITE, not see-through. That silently hid the
@@ -285,7 +329,7 @@ def kpi_card(key, label, cur, pri, fmt, ga, gb, spark):
                       "format": fmt}],
          "value": {"columnId": "vp-%s" % key, "color": "#FFFFFF", "fontSize": 22},
          "name": {"text": "Prior TTM", "color": "#FFFFFF", "fontSize": 13},
-         "layout": {"anchor": "middle"},
+         "layout": {"anchor": "center"},
          "style": {"padding": "none", "backgroundColor": gb}})
     add({"id": "sp-%s" % key, "kind": "line-chart",
          "source": {"elementId": "tbl-lb", "kind": "table"},
@@ -298,7 +342,11 @@ def kpi_card(key, label, cur, pri, fmt, ga, gb, spark):
                               "scale": {"type": "linear", "zero": False, "hideZeroLine": True}}},
          "color": {"by": "category", "column": "spc-%s" % key, "scheme": ["#FFFFFF"]},
          "name": {"visibility": "hidden"}, "legend": {"visibility": "hidden"},
-         "style": {"padding": "none"},
+         # The trend line is #FFFFFF so it can sit on the card gradient.
+         # Without an explicit fill the tile renders OPAQUE WHITE (same
+         # gotcha as the kpi-charts above) and the sparkline vanishes --
+         # caught on the AMAROK render, but it affects every company.
+         "style": {"padding": "none", "backgroundColor": ga},
          "lineAreaStyle": {"interpolation": "monotone"}})
 
 
@@ -349,12 +397,50 @@ def pri_(col):
     return 'SumIf([{t}/{c}], [{t}/Period Name] = "Prior Period")'.format(t=LB, c=col)
 
 
+def _report_button(bid, aid, label, report_id):
+    # `open-document` REQUIRES documentId (plus openTarget and documentType) --
+    # confirmed against the public OpenAPI. This was previously keyed as
+    # `document`, which is not in the schema, so the button rendered but had no
+    # valid target to navigate to.
+    return {"id": bid, "kind": "button", "text": label, "appearance": "filled",
+            "actions": [{"id": aid, "trigger": "on-click",
+                         "effects": [{"effect": "open-document",
+                                      "documentId": report_id,
+                                      "documentType": "report",
+                                      "openTarget": "_blank"}]}]}
+
+
+def _report_buttons(idx):
+    """The primary statement plus any EXTRA_REPORTS whose id file exists,
+    for page `idx`'s header.
+
+    Merges two independent generalizations of the original page-1-only,
+    one-report `stmt_button`: reports are now N per company
+    (`CO.EXTRA_REPORTS`) AND the buttons appear on every page, so a viewer
+    who lands on the modeler can still reach the PDF. Element and action ids
+    carry the page index because ids are unique workbook-wide, not per page.
+    """
+    out = []
+    if (CO.has_statement(CFG) and REPORT_ID_FILE.exists()
+            and REPORT_ID_FILE.read_text().strip()):
+        out.append(_report_button("btn-stmt%d" % idx, "a-stmt%d" % idx,
+                                  CO.statement(CFG, "button_label"),
+                                  REPORT_ID_FILE.read_text().strip()))
+    for i, r in enumerate(CO.extra_reports(CFG)):
+        f = SPECS / r["id_file"]
+        if f.exists() and f.read_text().strip():
+            out.append(_report_button("btn-rpt%dp%d" % (i, idx),
+                                      "a-rpt%dp%d" % (i, idx),
+                                      r["label"], f.read_text().strip()))
+    return out
+
+
 # ================================================= PAGE 1 — command center
 
 header(1, CFG["title"],
        "Net revenue, margin and %s growth · trailing twelve months vs prior year"
        % CFG["unit_noun"],
-       [nav_el(1)] + stmt_button(1),
+       [nav_el(1)] + _report_buttons(1),
        titles=False)
 
 # --- the live rates ticker (registered plugin fetching Treasury yields)
@@ -369,7 +455,7 @@ if NO_TICKER:
          "body": '<span style="color: %s">**%s** · trailing twelve months vs prior year</span>'
                  % (B.NAVY, CFG["name"].upper()),
          "style": {"backgroundColor": "transparent", "borderRadius": "round"},
-         "verticalAlign": "middle"})
+         "verticalAlign": "center"})
 else:
     add({"id": "plg-ticker", "kind": "plugin", "pluginId": CO.plugin(CFG, "ticker"),
          "displayName": "Market rates",
@@ -410,10 +496,10 @@ add({"id": "mc-logo", "kind": "image", "source": {"kind": "url", "url": B.logo_w
 add({"id": "mc-title", "kind": "text",
      "body": '## **<span style="color: #FFFFFF">{{[Product SKUs/Product]}}</span>**',
      "style": {"backgroundColor": "transparent", "padding": "none"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 for _k, _lab, _f, _fmt in [
-        ("bal", "%s ($B)" % CFG["volume_noun"].title(), 'Sum([%s/Balances $B])' % SK, MONEY_B),
+        ("bal", VOL_LABEL, to_scale('Sum([%s/Balances $B])' % SK), dict(MONEY_SC)),
         ("mem", ("%ss (K)" % CFG["unit_noun"].title()), 'Sum([%s/Members K])' % SK, NUM1),
         ("rate", "Avg Rate", 'Avg([%s/Rate Pct]) / 100' % SK, PCT1),
         ("qoq", "QoQ Growth", 'Avg([%s/QoQ Growth Pct]) / 100' % SK, PCT1)]:
@@ -422,16 +508,16 @@ for _k, _lab, _f, _fmt in [
          "columns": [{"id": "mcv-%s" % _k, "formula": _f, "name": _lab, "format": _fmt}],
          "value": {"columnId": "mcv-%s" % _k, "color": B.NAVY, "fontSize": 26},
          "name": {"text": _lab, "color": B.TEXT_MUTED, "fontSize": 12},
-         "layout": {"anchor": "middle"}, "style": panel()})
+         "layout": {"anchor": "center"}, "style": panel()})
 
 # trend + rate history, the analytical half of the card
 add({"id": "mc-trend", "name": {"visibility": "hidden"}, "kind": "line-chart", "name": "%s & revenue trend" % CFG["volume_noun"].title(),
      "source": {"elementId": "tbl-lbc", "kind": "table"},
      "columns": [{"id": "mct-x", "formula": "[%s/Period]" % LBC, "name": "Period"},
                  {"id": "mct-bal", "formula": "Sum([%s/Avg Balances])" % LBC,
-                  "name": "Avg Balances ($M)", "format": MONEY_M},
+                  "name": "Avg Balances ($M)", "format": MONEY_V},
                  {"id": "mct-rev", "formula": "Sum([%s/Net Revenue])" % LBC,
-                  "name": "Net Revenue ($M)", "format": MONEY_M}],
+                  "name": CO.lab(CFG, "kpi_revenue"), "format": MONEY_M}],
      "xAxis": {"columnId": "mct-x"},
      "yAxis": {"columnIds": ["mct-bal", "mct-rev"]},
      "stacking": "none",
@@ -445,8 +531,8 @@ add({"id": "mc-sku", "name": {"visibility": "hidden"}, "kind": "table", "name": 
      "source": {"elementId": "tbl-sku", "kind": "table"},
      "columns": [
          {"id": "mcs-name", "formula": "[%s/Sub-Product]" % SK, "name": "Sub-product"},
-         {"id": "mcs-bal", "formula": "[%s/Balances $B]" % SK, "name": "Balances ($B)",
-          "format": MONEY_B},
+         {"id": "mcs-bal", "formula": to_scale("[%s/Balances $B]" % SK),
+          "name": VOL_LABEL, "format": dict(MONEY_SC)},
          {"id": "mcs-mem", "formula": "[%s/Members K]" % SK, "name": ("%ss (K)" % CFG["unit_noun"].title()),
           "format": NUM1},
          {"id": "mcs-rate", "formula": "[%s/Rate Pct]" % SK, "name": "Rate %"},
@@ -489,7 +575,7 @@ add({"id": "mc-model", "kind": "button",
 
 add({"id": "tc-persona", "kind": "tabbed-container",
      "tabs": [{"name": n} for n in CO.lab(CFG, "personas")],
-     "tabBar": {"alignment": "start"}})
+     "tabBar": {"alignment": "left"}})
 # NOTE: no separate persona buttons. The tabbed container renders its own tab
 # bar, so a second set of select-tab buttons is a duplicate control that can
 # fall out of sync with it. The tab bar IS the persona switcher -- it needs no
@@ -538,7 +624,7 @@ add({"id": "ico-notif", "kind": "image",
 add({"id": "notif-heading", "kind": "text",
      "body": '<span style="color: %s">**NOTIFICATIONS**</span>' % B.SOFI_BRIGHT,
      "style": {"backgroundColor": "transparent", "padding": "none"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 for _o, _sev, _cap in ALERTS:
     _c, _g, _tint, _bd, _body, _meta = _SEV[_sev]
@@ -556,28 +642,28 @@ for _o, _sev, _cap in ALERTS:
     add({"id": "nsev-%s" % _k, "kind": "text",
          "body": '<span style="color: %s">%s</span>' % (_c, _sev.upper()),
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "middle"})
+         "verticalAlign": "center"})
     add({"id": "ntitle-%s" % _k, "kind": "text",
          "body": '<span style="color: %s">**{{%s}}**</span>' % (_c, _nt("Title", _o)),
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "middle"})
+         "verticalAlign": "center"})
     add({"id": "nbody-%s" % _k, "kind": "text",
          "body": '<span style="color: %s">{{%s}}</span>' % (_body, _nt("Body", _o)),
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "start"})
+         "verticalAlign": "top"})
     add({"id": "nkpi-%s" % _k, "kind": "kpi-chart",
          "source": {"elementId": "tbl-notif", "kind": "table"},
          "columns": [{"id": "nkv-%s" % _k, "formula": _nt("Impact", _o),
                       "name": _cap, "format": NUM0}],
          "value": {"columnId": "nkv-%s" % _k, "color": _c, "fontSize": 20},
          "name": {"text": _cap, "color": _meta, "fontSize": 10},
-         "layout": {"anchor": "start"},
+         "layout": {"anchor": "left"},
          "style": {"padding": "none"}})
     add({"id": "nmeta-%s" % _k, "kind": "text",
          "body": '<span style="color: %s">{{%s}} · {{%s}}</span>'
                  % (_meta, _nt("Owner", _o), _nt("Age", _o)),
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "end"})
+         "verticalAlign": "bottom"})
 
 
 # --- the Cold Provisions overview pair: a map you scan for the outlier, and a
@@ -593,7 +679,7 @@ add({"id": "map-geo", "kind": "region-map",
           "format": MONEY_M},
          {"id": "gm-perf", "formula": "Avg([%s/Performance Index])" % LB,
           "name": "Performance vs plan", "format": PCT1}],
-     "region": {"id": "gm-st", "regionType": "us-state"},
+     "region": {"columnId": "gm-st", "regionType": "us-state"},
      # shaded by performance against plan, not raw volume: a big state is not
      # news, a big state that is UNDERPERFORMING is
      # continuous scale centred on 1.0 = exactly on plan, so under-plan states
@@ -626,12 +712,17 @@ add({"id": "tbl-rank", "kind": "table",
      "columns": [
          {"id": "rk-prod", "formula": "[%s/Product]" % LB,
           "name": CO.lab(CFG, "seg_product")},
-         {"id": "rk-vol", "formula": "Sum([%s/Net Revenue])" % LB, "name": CO.lab(CFG, "kpi_revenue").split(" (")[0],
+         # Current period only, to match the KPI card that carries the SAME
+         # label. Unfiltered this summed all 24 months, so the table read
+         # $50.5M for the top channel while the TTM card totalled $75M across
+         # all six -- two numbers, one label, contradicting each other on
+         # screen. Shared-code fix, not company-specific.
+         {"id": "rk-vol", "formula": cur_("Net Revenue"), "name": CO.lab(CFG, "kpi_revenue").split(" (")[0],
           "format": MONEY_M},
          {"id": "rk-perf", "formula": "Avg([%s/Performance Index])" % LB,
           "name": "vs plan", "format": PCT1},
          {"id": "rk-spread", "formula": "Avg([%s/Spread Pct])" % LB,
-          "name": "Spread %", "format": {"kind": "number", "formatString": ",.2f",
+          "name": CO.LABELS.get(CFG["key"], {}).get("col_spread", "Spread %"), "format": {"kind": "number", "formatString": ",.2f",
                                           "suffix": "%"}}],
      "groupings": [{"id": "rkg", "groupBy": ["rk-prod"],
                     "calculations": ["rk-vol", "rk-perf", "rk-spread"],
@@ -661,7 +752,7 @@ if NO_HERO:
              {"id": "pw-q", "formula": "[%s/Quarter]" % LB, "name": "Quarter"},
              {"id": "pw-rev", "formula": "Sum([%s/Net Revenue])" % LB,
               "name": CO.lab(CFG, "kpi_revenue"), "format": MONEY_M}],
-         "rowsBy": [{"id": "pw-prod"}], "columnsBy": [{"id": "pw-q"}],
+         "rowsBy": [{"columnId": "pw-prod"}], "columnsBy": [{"columnId": "pw-q"}],
          "values": ["pw-rev"], "style": panel()})
 else:
     _hsrc = "tbl-hero" if HERO_TBL else "tbl-pc"
@@ -700,7 +791,7 @@ kpi_card("cp", CO.lab(CFG, "kpi_margin"), cur_("Contribution Profit"),
 kpi_card("bal", CO.lab(CFG, "kpi_volume"),
          'SumIf([{t}/Avg Balances], [{t}/Period Name] = "Current Period") / 12'.format(t=LB),
          'SumIf([{t}/Avg Balances], [{t}/Period Name] = "Prior Period") / 12'.format(t=LB),
-         MONEY_M, B.NAVY_DEEP, B.SOFI_BLUE,
+         MONEY_V, B.NAVY_DEEP, B.SOFI_BLUE,
          'SumIf([{t}/Avg Balances], [{t}/Balance Type] = "Loans")'.format(t=LB))
 kpi_card("mem", CO.lab(CFG, "kpi_units"),
          'MaxIf([{t}/Members (K)], [{t}/Period Name] = "Current Period")'.format(t=LB),
@@ -721,6 +812,8 @@ add({"id": "ico-ai", "kind": "image", "source": {"kind": "url", "url": B.icon(B.
 # The insight is only as good as what it is handed. Feeding three totals gets
 # "revenue grew, watch margin" -- true, useless, and already on screen above it.
 # Give it product-level movement and it can name the thing that actually moved.
+_SCALE = CO.scale(CFG)
+_S = _SCALE["suffix"]
 _AI_PROMPT = (
     '"You are an analyst covering ' + CFG["name"] + ' (' + CFG["domain"] + '). '
     'Write TWO sentences, 55-75 words total. First sentence: name the '
@@ -728,14 +821,17 @@ _AI_PROMPT = (
     'that moved most and quantify the move, and say WHY it moved given the rate and '
     'cost figures below. Second sentence: name the single biggest risk with its number, '
     'and what to do about it. Be specific and use the real names. Do NOT restate '
-    'portfolio totals -- they are on screen already. Data: net revenue $" & '
-    'Text(Round(SumIf([%(t)s/Net Revenue], [%(t)s/Period Name] = "Current Period") / 1000, 2)) '
-    '& "B vs $" & '
-    'Text(Round(SumIf([%(t)s/Net Revenue], [%(t)s/Period Name] = "Prior Period") / 1000, 2)) '
-    '& "B prior. Contribution margin " & '
+    'portfolio totals -- they are on screen already. Data: '
+    + CO.lab(CFG, "kpi_revenue").split(" (")[0].lower() + ' $" & '
+    'Text(Round(SumIf([%(t)s/Net Revenue], [%(t)s/Period Name] = "Current Period") / '
+    + str(_SCALE["div"]) + ', 2)) '
+    '& "' + _S + ' vs $" & '
+    'Text(Round(SumIf([%(t)s/Net Revenue], [%(t)s/Period Name] = "Prior Period") / '
+    + str(_SCALE["div"]) + ', 2)) '
+    '& "' + _S + ' prior. Contribution margin " & '
     'Text(Round(SumIf([%(t)s/Contribution Profit], [%(t)s/Period Name] = "Current Period") '
     '/ NullIf(SumIf([%(t)s/Net Revenue], [%(t)s/Period Name] = "Current Period"), 0) * 100, 0)) '
-    '& "%%. Lines of business: ' + PRODUCT_NAMES + '. ' + CO.lab(CFG, "driver_risk").replace("%", "%%") + ' now " & '
+    '& "%%. ' + CO.lab(CFG, "seg_product") + 's: ' + PRODUCT_NAMES + '. ' + CO.lab(CFG, "driver_risk").replace("%", "%%") + ' now " & '
     'Text(Round(AvgIf([%(t)s/Delinquency Rate], [%(t)s/Period Name] = "Current Period") * 100, 2)) '
     '& "%% vs " & '
     'Text(Round(AvgIf([%(t)s/Delinquency Rate], [%(t)s/Period Name] = "Prior Period") * 100, 2)) '
@@ -746,11 +842,40 @@ _AI_PROMPT = (
     '& "%% prior."'
 ) % {"t": LB}
 
+def _cur(col, fn="SumIf"):
+    return '%s([%s/%s], [%s/Period Name] = "Current Period")' % (fn, LB, col, LB)
+
+
+def _pri(col, fn="SumIf"):
+    return '%s([%s/%s], [%s/Period Name] = "Prior Period")' % (fn, LB, col, LB)
+
+
+# Deterministic, live-data takeaway. Used when CFG["insight_mode"] == "formula":
+# Snowflake Cortex CallText returned N/A for EVERY model/function variant on the
+# paperbricks Sigma Sample Database connection (probed 2026-10-14), so the LLM
+# insight is replaced by a formula sentence that always resolves.
+_DIV = str(_SCALE["div"])
+_FORMULA_INSIGHT = (
+    '"' + CO.lab(CFG, "kpi_revenue").split(" (")[0] + ' is $" & '
+    'Text(Round(' + _cur("Net Revenue") + ' / ' + _DIV + ', %d)) & "' % _SCALE["dp"] + _S + ' vs $" & '
+    'Text(Round(' + _pri("Net Revenue") + ' / ' + _DIV + ', %d)) & "' % _SCALE["dp"] + _S + ' prior (up '
+    '" & Text(Round((' + _cur("Net Revenue") + ' / NullIf(' + _pri("Net Revenue") + ', 0) - 1) * 100, 1)) '
+    '& "%), at a " & Text(Round(' + _cur("Contribution Profit") + ' / NullIf('
+    + _cur("Net Revenue") + ', 0) * 100, 0)) & "% ' + CFG.get("insight_margin", "net margin") + '. ' + CO.lab(CFG, "driver_risk")
+    + ' is " & Text(Round(' + _cur("Delinquency Rate", "AvgIf") + ' * 100, 1)) & "% vs " & '
+    'Text(Round(' + _pri("Delinquency Rate", "AvgIf") + ' * 100, 1)) & "% prior."'
+)
+
+if CFG.get("insight_mode") == "formula":
+    _INSIGHT_BODY = '**KEY TAKEAWAY** — {{' + _FORMULA_INSIGHT + '}}'
+else:
+    _INSIGHT_BODY = ('**AI INSIGHT** — {{Replace(CallText("SNOWFLAKE.CORTEX.COMPLETE", '
+                     '"CLAUDE-4-SONNET", ' + _AI_PROMPT + "), '\"', \"\")}}")
+
 add({"id": "txt-ai", "kind": "text",
-     "body": '**AI INSIGHT** — {{Replace(CallText("SNOWFLAKE.CORTEX.COMPLETE", '
-             '"CLAUDE-4-SONNET", ' + _AI_PROMPT + "), '\"', \"\")}}",
+     "body": _INSIGHT_BODY,
      "style": {"backgroundColor": "transparent"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 # --- product cards. Six hand-built cards, one per product, each reading its own
 # row via MaxIf. NOT a repeated container: `repeated-container` exposes no `name`
@@ -771,26 +896,29 @@ for key, product, tagline in PRODUCTS:
     add({"id": "pc-name-%s" % key, "kind": "text",
          "body": "### %s" % product,
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "middle"})
+         "verticalAlign": "center"})
     add({"id": "pc-tag-%s" % key, "kind": "text",
          "body": '<span style="color: %s">%s</span>' % (B.TEXT_MUTED, tagline),
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "start"})
+         "verticalAlign": "top"})
     # the one hero number on the card
     _sc = CO.scale(CFG)
-    add({"id": "pc-bal-%s" % key, "kind": "kpi-chart",
-         "source": {"elementId": "tbl-pc", "kind": "table"},
-         "columns": [{"id": "pcv-%s" % key,
-                      "formula": "(%s) / %d" % (_pc("Balances $B", product),
-                                                _sc["div"] // 1000 or 1),
-                      "name": "%s (%s)" % (CFG["volume_noun"].title(), _sc["suffix"]),
-                      "format": {"kind": "number",
-                                 "formatString": "$,.%df" % _sc["dp"],
-                                 "suffix": _sc["suffix"], "currencySymbol": "$"}}],
-         "value": {"columnId": "pcv-%s" % key, "color": B.SOFI_BRIGHT, "fontSize": 24},
-         "name": {"visibility": "hidden"},
-         "style": {"padding": "none"},
-         "layout": {"anchor": "start"}})
+    # A TEXT element with a {{formula}}, not a kpi-chart. As a kpi-chart this
+    # rendered a literal "null" on the LAST TWO cards while resolving correctly
+    # on the first four -- with byte-identical element shape, the same source,
+    # the same layout span, correct warehouse data (verified through
+    # /v2/workbooks/{id}/elements/tbl-pc/query) and regardless of MaxIf vs
+    # SumIf. What DOES resolve on those same two cards is every
+    # text-template formula in the card (the ring, the rate, the unit count),
+    # so the hero number uses that proven mechanism instead. Root cause on
+    # Sigma's side is unexplained; this is a workaround, not a diagnosis.
+    add({"id": "pc-bal-%s" % key, "kind": "text",
+         "body": '### **<span style="color: %s">{{%s | $,.%df}}%s</span>**'
+                 % (B.SOFI_BRIGHT,
+                    to_scale(_pc("Balances $B", product)),
+                    _SC["dp"], _SC["suffix"]),
+         "style": {"backgroundColor": "transparent", "padding": "none"},
+         "verticalAlign": "center"})
     add({"id": "pc-ring-%s" % key, "kind": "progress",
          # `progress` needs an explicit source. It resolved without one while the
          # cards sat directly on the page; once they moved inside a <Tab> the
@@ -813,13 +941,25 @@ for key, product, tagline in PRODUCTS:
     add({"id": "pc-sub-%s" % key, "kind": "text",
          # inline HTML is limited to <u> <sub> <sup> <span> <a> -- <b> is
          # rejected, so emphasis has to be markdown, outside the span
-         "body": ('<span style="color: %s">{{%s}}</span> **{{%s}}** '
-                  '<span style="color: %s">· {{%s | ,.2f}}M · {{%s}}</span>')
-                 % (B.TEXT_MUTED, _pc("Rate Label", product),
-                    _pc("Rate Value", product), B.TEXT_MUTED,
-                    _pc("Members M", product), _pc("Status", product)),
+         # The unit half of this line used to be hardcoded `{{Members M}}M`,
+         # which is right for "4.34M members" and absurd for a contingent
+         # workforce -- 62,400 workers rendered as "62.40M". Mode comes from
+         # company.CARD_UNITS; "count" uses the pre-scaled Unit Count column so
+         # the largest card agrees with the headline kpi_units KPI.
+         "body": (('<span style="color: %s">{{%s}}</span> **{{%s}}** '
+                   '<span style="color: %s">· {{%s | ,.0f}} %s · {{%s}}</span>')
+                  % (B.TEXT_MUTED, _pc("Rate Label", product),
+                     _pc("Rate Value", product), B.TEXT_MUTED,
+                     _pc("Unit Count", product), CFG["unit_noun"] + "s",
+                     _pc("Status", product))
+                  if CO.card_unit_mode(CFG) == "count" else
+                  ('<span style="color: %s">{{%s}}</span> **{{%s}}** '
+                   '<span style="color: %s">· {{%s | ,.2f}}M · {{%s}}</span>')
+                  % (B.TEXT_MUTED, _pc("Rate Label", product),
+                     _pc("Rate Value", product), B.TEXT_MUTED,
+                     _pc("Members M", product), _pc("Status", product))),
          "style": {"backgroundColor": "transparent", "padding": "none"},
-         "verticalAlign": "end"})
+         "verticalAlign": "bottom"})
 
 add({"id": "c-secw", "kind": "container", "spacing": "small",
      "style": {"padding": "none"}})
@@ -839,7 +979,7 @@ add({"id": "ico-wheel", "kind": "image",
 add({"id": "wheel-heading", "kind": "text",
      "body": '<span style="color: %s">**%s**</span>' % (B.SOFI_BRIGHT, CO.plugin(CFG, "hero_label") or "PORTFOLIO DETAIL"),
      "style": {"backgroundColor": "transparent", "padding": "none"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 add({"id": "ico-prod", "kind": "image",
      "source": {"kind": "url", "url": B.icon(B.ICON_TREND)},
@@ -847,7 +987,7 @@ add({"id": "ico-prod", "kind": "image",
 add({"id": "pc-heading", "kind": "text",
      "body": '<span style="color: %s">**PRODUCT PERFORMANCE**</span>' % B.SOFI_BRIGHT,
      "style": {"backgroundColor": "transparent", "padding": "none"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 # --- left column is one tabbed container: bridge / trend / detail
 add({"id": "bar-prod", "kind": "bar-chart",
@@ -876,7 +1016,7 @@ add({"id": "bar-prod", "kind": "bar-chart",
 add({"id": "c-rail1", "kind": "container", "spacing": "small", "style": panel()})
 add({"id": "rail-hd1", "kind": "text", "body": "**%s Copilot**" % CFG["name"],
      "style": {"color": B.TEXT_DARK, "backgroundColor": "transparent"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 add({"id": "chat1", "kind": "chat", "agentId": "ag-book"})
 add({"id": "btn-newscen", "kind": "button", "text": "+ New scenario",
      "appearance": "filled",
@@ -886,14 +1026,13 @@ add({"id": "btn-newscen", "kind": "button", "text": "+ New scenario",
 
 # Finance is its own page again: the modeler needs full width, and it competed
 # with the Analyst columns inside a tab.
-header(2, CO.lab(CFG, "modeler_title"), "", [nav_el(2)] + stmt_button(2), titles=False)
+header(2, CO.lab(CFG, "modeler_title"), "", [nav_el(2)] + _report_buttons(2), titles=False)
 
 # --- 1. base book: exactly ONE row per product.
 # A cross join runs against underlying rows, so a grouped view over the 144-row
 # monthly loan book would replicate each product 24 times and inflate every
 # downstream sum by 24x. This SQL aggregates to one row per product up front.
 add({"id": "sbase", "kind": "table", "name": "Product Base",
-     "visibleAsSource": True,
      "source": {"connectionId": S.CONN_SNOWFLAKE, "kind": "sql",
                 "statement": sql_text("scenario_base.sql")},
      "columns": [
@@ -902,7 +1041,7 @@ add({"id": "sbase", "kind": "table", "name": "Product Base",
          {"id": "sb-rev", "formula": "[Custom SQL/Revenue]", "name": "Revenue",
           "format": MONEY_M},
          {"id": "sb-bal", "formula": "[Custom SQL/Balances]", "name": "Balances",
-          "format": MONEY_M}],
+          "format": MONEY_V}],
      "style": panel()})
 
 # --- 2. the scenario list itself (standalone, so rows can be added)
@@ -920,7 +1059,6 @@ add({"id": "scen2", "kind": "input-table",
 #        constant, which is how you express a cross join here. Coalesce gives a
 #        "Base Case" row set when no scenario has been created yet.
 add({"id": "spivot", "kind": "pivot-table", "name": "Scenario Pivot",
-     "visibleAsSource": True,
      "source": {"kind": "join",
                 "joins": [{"left": {"elementId": "sbase", "kind": "table"},
                            "right": {"elementId": "scen2", "kind": "table"},
@@ -932,11 +1070,20 @@ add({"id": "spivot", "kind": "pivot-table", "name": "Scenario Pivot",
          {"id": "pv-scen", "formula": 'Coalesce([Scenarios/Scenario Name],"Base Case")',
           "name": "Scenario"},
          {"id": "pv-rev", "formula": "Sum([Product Base/Revenue])",
-          "name": "Baseline Revenue", "format": MONEY_M},
+          "name": C_BREV, "format": MONEY_M},
          {"id": "pv-bal", "formula": "Sum([Product Base/Balances])",
-          "name": C_VOL, "format": MONEY_M}],
-     "rowsBy": [{"id": "pv-prod"}], "values": ["pv-rev", "pv-bal"],
+          "name": C_VOL, "format": MONEY_V}],
+     "rowsBy": [{"columnId": "pv-prod"}], "values": ["pv-rev", "pv-bal"],
      "style": panel()})
+
+# The control MUST be added before `assum`: its projection column reads
+# [RateShock], and a control defined later in the elements list resolves as an
+# "Unknown column" error on every downstream KPI (verified 2026-10-14).
+_shock = segmented_control("ctrl-shock", "RateShock", CO.lab(CFG, "shock_label"),
+                           ["-100", "-50", "+0", "+50", "+100"])
+# An unset control is also an unknown reference, so it defaults to neutral.
+_shock["value"] = "+0"
+add(_shock)
 
 # --- 4. the editable assumptions, one set per scenario per product.
 #        Computed columns live INSIDE the input table and use bare column refs.
@@ -955,10 +1102,12 @@ add({"id": "assum", "kind": "input-table",
           # An input table's column NAME is its formula reference key, so these
           # interpolate the same constants used above -- renaming one without
           # the other is a "Dependency not found" at create.
-          "formula": "[Baseline Revenue] * (1 + Coalesce([%s], 0) / 100) "
-                     "+ [Baseline Revenue] * (Coalesce([%s], 0) "
-                     "- Coalesce([%s], 0)) / 10000" % (C_GROW, C_YLD, C_CST),
-          "name": "Projected Revenue", "format": MONEY_M},
+          "formula": ("[{b}] * (1 + Coalesce([{g}], 0) / 100) "
+                      "+ [{b}] * (Coalesce([{y}], 0) "
+                      "- Coalesce([{c}], 0)) / 10000 "
+                      "- [{v}] * Number(Coalesce([RateShock], \"0\")) / 10000").format(
+                          b=C_BREV, g=C_GROW, y=C_YLD, c=C_CST, v=C_VOL),
+          "name": C_PREV, "format": MONEY_M},
          {"id": "ia-note", "type": "text", "name": "Rationale"}],
      "order": ["ia-scen", "ia-prod", "ia-rev", "ia-growth", "ia-yield", "ia-fund",
                "ia-prev", "ia-note"],
@@ -970,15 +1119,18 @@ add({"id": "assum", "kind": "input-table",
      "style": panel()})
 
 # --- 5. the book everything downstream reads, filtered by the scenario selector
-add({"id": "book", "kind": "table", "name": "Book", "visibleAsSource": True,
+# 2026-09-29: `visibleAsSource` is now rejected on a WORKBOOK element
+# ("only supported on data-model documents"). It was cosmetic here -- it
+# surfaced the modeler chain in the source picker; the chain still works.
+add({"id": "book", "kind": "table", "name": "Book",
      "source": {"elementId": "assum", "kind": "table"},
      "columns": [
          {"id": "bb-scen", "formula": "[Assumptions/Scenario]", "name": "Scenario"},
          {"id": "bb-prod", "formula": "[Assumptions/Product]", "name": "Product"},
-         {"id": "bb-brev", "formula": "[Assumptions/Baseline Revenue]",
-          "name": "Baseline Revenue", "format": MONEY_M},
-         {"id": "bb-prev", "formula": "[Assumptions/Projected Revenue]",
-          "name": "Projected Revenue", "format": MONEY_M}],
+         {"id": "bb-brev", "formula": "[Assumptions/%s]" % C_BREV,
+          "name": C_BREV, "format": MONEY_M},
+         {"id": "bb-prev", "formula": "[Assumptions/%s]" % C_PREV,
+          "name": C_PREV, "format": MONEY_M}],
      "style": panel()})
 
 add({"kind": "control", "id": "ctrl-sel", "controlId": "scenarioSelect",
@@ -990,11 +1142,10 @@ add({"kind": "control", "id": "ctrl-sel", "controlId": "scenarioSelect",
      "source": {"kind": "source", "source": {"kind": "table", "elementId": "book"},
                 "columnId": "bb-scen"}})
 
-add(segmented_control("ctrl-shock", "RateShock", CO.lab(CFG, "shock_label"),
-                      ["-100", "-50", "0", "+50", "+100"]))
 
-PROJ = "Sum([Book/Projected Revenue])"
-BASE = "Sum([Book/Baseline Revenue])"
+
+PROJ = "Sum([Book/%s])" % C_PREV
+BASE = "Sum([Book/%s])" % C_BREV
 
 
 def light_kpi(key, label, value, compare, fmt, primary=False):
@@ -1010,11 +1161,13 @@ def light_kpi(key, label, value, compare, fmt, primary=False):
          "style": {"backgroundColor": B.CARD, "borderRadius": "round",
                    "borderColor": B.SOFI_BRIGHT if primary else B.BORDER,
                    "borderWidth": 2 if primary else 1},
-         "layout": {"anchor": "middle"}})
+         "layout": {"anchor": "center"}})
 
 
-light_kpi("rev", "Projected Net Revenue ($M)", PROJ, BASE, MONEY_M, primary=True)
-light_kpi("delta", "Revenue Uplift ($M)", "%s - %s" % (PROJ, BASE), "0", MONEY_M)
+_REVN = CO.lab(CFG, "kpi_revenue").split(" (")[0]
+_UNIT = "$" + CO.scale(CFG)["suffix"] if CO.scale(CFG)["suffix"] == "K" else "$M"
+light_kpi("rev", "Projected %s (%s)" % (_REVN, _UNIT), PROJ, BASE, MONEY_M, primary=True)
+light_kpi("delta", "Uplift (%s)" % _UNIT, "%s - %s" % (PROJ, BASE), "0", MONEY_M)
 light_kpi("pct", "Uplift %",
           "Coalesce((%s - %s) / NullIf(%s, 0), 0)" % (PROJ, BASE, BASE), "0", PCT1)
 
@@ -1022,8 +1175,8 @@ add({"id": "bar-proj", "kind": "bar-chart",
      "source": {"elementId": "book", "kind": "table"},
      "columns": [
          {"id": "bj-x", "formula": "[Book/Product]", "name": "Product"},
-         {"id": "bj-base", "formula": BASE, "name": "Baseline ($M)", "format": MONEY_M},
-         {"id": "bj-proj", "formula": PROJ, "name": "Projected ($M)", "format": MONEY_M},
+         {"id": "bj-base", "formula": BASE, "name": "Baseline (%s)" % _UNIT, "format": MONEY_M},
+         {"id": "bj-proj", "formula": PROJ, "name": "Projected (%s)" % _UNIT, "format": MONEY_M},
          # carry Scenario through even though it is not on an axis: an element
          # only exposes the source columns it actually references, so leaving it
          # out means hand-adding it in the UI later
@@ -1032,8 +1185,9 @@ add({"id": "bar-proj", "kind": "bar-chart",
      "xAxis": {"columnId": "bj-x"},
      # two y-series stack by default, which would render their SUM
      "stacking": "none",
-     "name": title("Projected vs baseline net revenue by %s"
-                   % CO.lab(CFG, "seg_product").lower()),
+     "name": title("Projected vs baseline %s by %s"
+                   % (CO.lab(CFG, "kpi_revenue").split(" (")[0].lower(),
+                      CO.lab(CFG, "seg_product").lower())),
      "legend": {"visibility": "shown"},
      "style": panel()})
 
@@ -1082,7 +1236,7 @@ for bid, label, status, appearance in [
 
 header(3, "Member Cohort Builder",
        "Filter the member base into a saveable cohort",
-       [nav_el(3)] + stmt_button(3), titles=False)
+       [nav_el(3)] + _report_buttons(3), titles=False)
 
 # the segment filters; the agent gets one set-control-value tool per dimension
 COHORT_FILTERS = [
@@ -1126,7 +1280,7 @@ for key, label, formula, fmt, primary in [
          "style": {"backgroundColor": B.CARD, "borderRadius": "round",
                    "borderColor": B.SOFI_BRIGHT if primary else B.BORDER,
                    "borderWidth": 2 if primary else 1},
-         "layout": {"anchor": "middle"}})
+         "layout": {"anchor": "center"}})
 
 # col = the SQL column name (fixed contract); label = what a human reads.
 # Conflating the two is what produced `Dependency not found: 'member
@@ -1197,30 +1351,30 @@ add({"id": "ico-filters", "kind": "image",
 add({"id": "sec-filters", "kind": "text",
      "body": '<span style="color: %s">**SEGMENT FILTERS**</span>' % B.SOFI_BRIGHT,
      "style": {"backgroundColor": "transparent", "padding": "none"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 add({"id": "tbl-members", "kind": "table", "name": "Member List",
      "source": {"elementId": "tbl-mp", "kind": "table"},
      "columns": [
-         {"id": "ml-id", "formula": "[%s/Member ID]" % MP, "name": "Member"},
-         {"id": "ml-prod", "formula": "[%s/Primary Product]" % MP, "name": "Primary Product"},
-         {"id": "ml-credit", "formula": "[%s/Credit Band]" % MP, "name": "Credit Band"},
-         {"id": "ml-eng", "formula": "[%s/Engagement]" % MP, "name": "Engagement"},
-         {"id": "ml-bal", "formula": "[%s/Total Balances]" % MP, "name": "Balances",
-          "format": MONEY_M},
+         {"id": "ml-id", "formula": "[%s/Member ID]" % MP, "name": CFG["unit_noun"].title()},
+         {"id": "ml-prod", "formula": "[%s/Primary Product]" % MP, "name": CO.lab(CFG, "seg_product")},
+         {"id": "ml-credit", "formula": "[%s/Credit Band]" % MP, "name": CO.lab(CFG, "seg_credit")},
+         {"id": "ml-eng", "formula": "[%s/Engagement]" % MP, "name": CO.lab(CFG, "seg_engage")},
+         {"id": "ml-bal", "formula": "[%s/Total Balances]" % MP, "name": CO.lab(CFG, "kpi_cohort_vol"),
+          "format": MONEY_V},
          {"id": "ml-attr", "formula": "[%s/Attrition Propensity]" % MP,
-          "name": "Attrition", "format": PCT1}],
+          "name": CO.lab(CFG, "kpi_cohort_risk").replace("Avg ", "").capitalize(), "format": PCT1}],
      "style": panel()})
 
 add({"id": "tc-cohort", "kind": "tabbed-container",
      "tabs": [{"name": "Distribution"}, {"name": "Member list"},
               {"name": "Saved cohorts"}],
-     "tabBar": {"alignment": "start"}})
+     "tabBar": {"alignment": "left"}})
 
 add({"id": "c-rail3", "kind": "container", "spacing": "small", "style": panel()})
 add({"id": "rail-hd3", "kind": "text", "body": "**Cohort Copilot**",
      "style": {"color": B.TEXT_DARK, "backgroundColor": "transparent"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 add({"id": "chat3", "kind": "chat", "agentId": "ag-cohort"})
 
 
@@ -1244,13 +1398,13 @@ add({"id": "m-logo", "kind": "image",
 add({"id": "m-title", "kind": "text",
      "body": '<span style="color: #FFFFFF">**New scenario**</span>',
      "style": {"backgroundColor": "transparent", "padding": "none"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 add(text_control("m-scen-name", "NewScenarioName", "Scenario name"))
 add({"id": "m-scen-help", "kind": "text",
      "body": '<span style="color: %s">Creates a full set of driver rows for every '
              'product, selects it, and clears this field.</span>' % B.TEXT_MUTED,
      "style": {"color": B.TEXT_MUTED, "backgroundColor": "transparent"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 add({"id": "btn-modal-create", "kind": "button", "text": "Create scenario",
      "appearance": "filled",
      "actions": [{"id": "a-modal-create", "trigger": "on-click",
@@ -1273,14 +1427,17 @@ add({"id": "btn-modal-cancel", "kind": "button", "text": "Cancel", "appearance":
 
 overlays.append({
     "id": "drawerProduct", "type": "drawer", "name": "Product Detail",
-    "drawer": {"width": "medium", "position": "end", "showShadow": "shown",
+    # 2026-09-29: `drawer.position` was removed from the API ("Drawers anchor
+    # to the trailing edge"). Note `verify` does NOT validate overlays, so
+    # this only surfaced on the real update call.
+    "drawer": {"width": "medium", "showShadow": "shown",
                "header": {"title": " ", "showCloseIcon": "shown"}}})
 add({"id": "dw-tbl", "kind": "table", "name": "Product Detail",
      "source": {"elementId": "tbl-lb", "kind": "table"},
      "columns": [
          {"id": "dw-prod", "formula": "[%s/Product]" % LB, "name": "Product"},
          {"id": "dw-rev", "formula": "Sum([%s/Net Revenue])" % LB,
-          "name": "Net Revenue ($M)", "format": MONEY_M},
+          "name": CO.lab(CFG, "kpi_revenue"), "format": MONEY_M},
          {"id": "dw-nii", "formula": "Sum([%s/Net Interest Income])" % LB,
           "name": "Net Interest Income ($M)", "format": MONEY_M},
          {"id": "dw-prov", "formula": "Sum([%s/Provision])" % LB,
@@ -1302,7 +1459,7 @@ add({"id": "dw-tbl", "kind": "table", "name": "Product Detail",
 add({"id": "dw-note", "kind": "text",
      "body": "Drawers are new to code representation — this whole panel is declared in the spec.",
      "style": {"color": B.TEXT_MUTED, "backgroundColor": "transparent"},
-     "verticalAlign": "middle"})
+     "verticalAlign": "center"})
 
 
 # ====================================================================== agents
@@ -1311,9 +1468,33 @@ agents.append({
     "id": "ag-book", "name": ("%s Copilot" % CFG["name"]),
     "description": "Answers questions about %s product performance." % CFG["name"],
     "instructions": (
-        "%s The lines of business are: %s. " % (CFG["agent"], PRODUCT_NAMES) +
+        "%s The %ss are: %s. " % (CFG["agent"],
+                                  CO.lab(CFG, "seg_product").lower(),
+                                  PRODUCT_NAMES) +
         "The data covers six lines over 24 months split into current and prior "
-        "trailing-twelve-month windows; amounts are in $MM. " +
+        "trailing-twelve-month windows; amounts are in $MM. "
+        "The base table's columns carry generic names for historical reasons: "
+        '"Members (K)" is ' + CO.lab(CFG, "kpi_units").lower() + ', '
+        '"Originations" is new ' + CFG["unit_noun"] + 's added, and '
+        '"Net Revenue" is ' + CO.lab(CFG, "kpi_revenue").split(" (")[0].lower()
+        + ". ALWAYS use the business names, never the raw column names. "
+        # Without these rules the agent raw-sums a MONTHLY SNAPSHOT column over
+        # all 24 months and reports a figure ~24x the dashboard's. Observed
+        # live: it answered "$17.9B spend under management" on a program the
+        # KPI card shows as $785M. An agent that contradicts the card above it
+        # is worse than no agent, so the aggregation rules are explicit.
+        "HOW TO AGGREGATE, and this matters because getting it wrong "
+        "contradicts the KPI cards on the page: unless the user asks for "
+        "history, restrict to the current trailing-twelve-month window "
+        '(Period Name = "Current Period"). '
+        '"Avg Balances" (' + CO.lab(CFG, "kpi_volume").split(" (")[0].lower()
+        + ") is a MONTHLY SNAPSHOT, not a flow: report it as the sum over the "
+        "window DIVIDED BY 12, never as a raw sum. "
+        '"Members (K)" (' + CO.lab(CFG, "kpi_units").lower()
+        + ") is also a snapshot -- use its maximum, never a sum. "
+        '"Net Revenue", "Contribution Profit", "Fee Income" and "Provision" '
+        "ARE additive -- sum those over the window. Percentages and rates must "
+        "be recomputed from their components, never averaged. " +
         CO.vocab(CFG, "econ") + " Cite " + CO.vocab(CFG, "metrics") +
         ", and always name the " + CO.lab(CFG, "seg_product").lower()
          + ". Be concise and quantitative."),
@@ -1442,9 +1623,9 @@ for _el in elements:
 
 LAYOUT = """<?xml version="1.0" encoding="utf-8"?>
 <Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" id="pg1">
-  <Container elementId="c-hdr1" type="grid" gridColumn="1 / 25" gridRow="1 / 6" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
-    <Element elementId="logo1" gridColumn="1 / 6" gridRow="1 / 6"/>
-    <Element elementId="nav-main1" gridColumn="13 / 20" gridRow="2 / 6"/>
+  <Container elementId="c-hdr1" type="grid" gridColumn="1 / 25" gridRow="1 / 4" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
+    <Element elementId="logo1" gridColumn="1 / 6" gridRow="1 / 4"/>
+    <Element elementId="nav-main1" gridColumn="13 / 20" gridRow="2 / 4"/>
 __STMT_BUTTON1__
   </Container>
   <Container elementId="c-rev" type="grid" gridColumn="1 / 7" gridRow="6 / 16" gridTemplateColumns="repeat(12, 1fr)" gridTemplateRows="auto">
@@ -1508,9 +1689,9 @@ __NOTIF_CARDS__
   </Container>
 </Page>
 <Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" id="pg2">
-  <Container elementId="c-hdr2" type="grid" gridColumn="1 / 25" gridRow="1 / 6" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
-    <Element elementId="logo2" gridColumn="1 / 6" gridRow="1 / 6"/>
-    <Element elementId="nav-main2" gridColumn="13 / 20" gridRow="2 / 6"/>
+  <Container elementId="c-hdr2" type="grid" gridColumn="1 / 25" gridRow="1 / 4" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
+    <Element elementId="logo2" gridColumn="1 / 6" gridRow="1 / 4"/>
+    <Element elementId="nav-main2" gridColumn="13 / 20" gridRow="2 / 4"/>
 __STMT_BUTTON2__
   </Container>
   <Element elementId="ctrl-sel" gridColumn="1 / 7" gridRow="6 / 9"/>
@@ -1526,9 +1707,9 @@ __STMT_BUTTON2__
   <Element elementId="assum" gridColumn="1 / 25" gridRow="35 / 57"/>
 </Page>
 <Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" id="pg3">
-  <Container elementId="c-hdr3" type="grid" gridColumn="1 / 25" gridRow="1 / 6" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
-    <Element elementId="logo3" gridColumn="1 / 6" gridRow="1 / 6"/>
-    <Element elementId="nav-main3" gridColumn="13 / 20" gridRow="2 / 6"/>
+  <Container elementId="c-hdr3" type="grid" gridColumn="1 / 25" gridRow="1 / 4" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
+    <Element elementId="logo3" gridColumn="1 / 6" gridRow="1 / 4"/>
+    <Element elementId="nav-main3" gridColumn="13 / 20" gridRow="2 / 4"/>
 __STMT_BUTTON3__
   </Container>
   <Container elementId="c-secf" type="grid" gridColumn="1 / 25" gridRow="6 / 8" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto">
@@ -1661,13 +1842,30 @@ LAYOUT = LAYOUT.replace("__NOTIF_CARDS__", "\n".join(_NOTIF_ROWS))
 
 # The statement button only exists once the report has been created, so its
 # layout slot has to appear and disappear with it -- a layout line referencing a
-# missing element is a hard rejection at create. One button per page now
-# (was page-1 only), each with its own element id.
+# missing element is a hard rejection at create. Two generalizations combined:
+# a button slot on EVERY page header (repo) and N report buttons rather than
+# one hardcoded btn-stmt (this checkout, see company.EXTRA_REPORTS).
 for _pg in (1, 2, 3):
-    LAYOUT = LAYOUT.replace(
-        "__STMT_BUTTON%d__" % _pg,
-        '    <Element elementId="btn-stmt%d" gridColumn="21 / 25" gridRow="2 / 6"/>' % _pg
-        if any(e["id"] == "btn-stmt%d" % _pg for e in elements) else "")
+    _ids = [e["id"] for e in elements
+            if e.get("kind") == "button"
+            and (e["id"] == "btn-stmt%d" % _pg
+                 or re.match(r"btn-rpt\d+p%d$" % _pg, e["id"]))]
+    if not _ids:
+        LAYOUT = LAYOUT.replace("__STMT_BUTTON%d__" % _pg, "")
+        continue
+    # Buttons share columns 17..25; the nav pill gives up room as they multiply.
+    _span = 8 // len(_ids)
+    _slots = []
+    for _i, _bid in enumerate(_ids):
+        _a = 17 + _i * _span
+        _b = 25 if _i == len(_ids) - 1 else _a + _span
+        _slots.append('    <Element elementId="%s" gridColumn="%d / %d" gridRow="2 / 4"/>'
+                      % (_bid, _a, _b))
+    LAYOUT = LAYOUT.replace("__STMT_BUTTON%d__" % _pg, "\n".join(_slots))
+    if len(_ids) > 1:
+        LAYOUT = LAYOUT.replace(
+            '<Element elementId="nav-main%d" gridColumn="13 / 20" gridRow="2 / 4"/>' % _pg,
+            '<Element elementId="nav-main%d" gridColumn="10 / 17" gridRow="2 / 4"/>' % _pg)
 
 SETTINGS = {"theme": {"overrides": {
     "colors": {"text": B.TEXT_DARK, "highlight": B.SOFI_BRIGHT, "success": B.GOOD,

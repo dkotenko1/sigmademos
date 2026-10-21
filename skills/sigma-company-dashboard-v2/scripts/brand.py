@@ -3,6 +3,7 @@
 #0074F5 -> #03AAFF."""
 
 import base64
+import colorsys
 import pathlib
 
 ASSETS = pathlib.Path(__file__).resolve().parent.parent / "assets"
@@ -31,7 +32,10 @@ def apply(cfg):
     TEXT_DARK = pal["navy"]
     COMPANY, LOGO_DOMAIN = cfg["name"], cfg["logo_domain"]
     global LOGO_PREFIX, LOGO_CHIP
-    LOGO_PREFIX = {"mcd": "mcd"}.get(cfg["key"], cfg["key"])
+    # `logo_prefix` lets two company configs share one fetched logo (e.g. two
+    # alternative builds for the same prospect) without duplicating the
+    # asset files under a second name.
+    LOGO_PREFIX = cfg.get("logo_prefix") or {"mcd": "mcd"}.get(cfg["key"], cfg["key"])
     LOGO_CHIP = cfg.get("logo_chip", False)
     CATEGORICAL = [SOFI_BRIGHT, SOFI_MINT, NAVY, SOFI_CYAN,
                    SOFI_BLUE, "#7CC7E8", "#4A90E2", "#0A4E8B"]
@@ -51,6 +55,51 @@ WARN = "#E1A32D"
 # (#E1A32D) that read as someone else's brand in the donut and the category bars.
 CATEGORICAL = [SOFI_BRIGHT, SOFI_MINT, NAVY, SOFI_CYAN,
                SOFI_BLUE, "#7CC7E8", "#4A90E2", "#0A4E8B"]
+
+
+def _rel_lum(hex_color):
+    h = hex_color.lstrip("#")
+    ch = [int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    f = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in ch]
+    return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2]
+
+
+def contrast_on_white_text(hex_color):
+    """Contrast ratio of #FFFFFF text against `hex_color` as a background."""
+    return 1.05 / (_rel_lum(hex_color) + 0.05)
+
+
+def ensure_white_readable(hex_color, minimum=3.2):
+    """Darken a brand colour just enough that WHITE text on it is legible.
+
+    The KPI cards print white values on a brand-coloured tile, so any company
+    whose palette carries a genuinely light accent renders an unreadable
+    "Prior" tile. Measured on SimplifyVMS: white on their real accent
+    #A5D3FF is 1.57:1 and on their mint #17B8A6 is 2.49:1, both under the 3:1
+    floor for large text.
+
+    This is shared-code behaviour, not one company's bug -- the fix belongs
+    here rather than in company.py, because distorting a documented brand hex
+    to work around a rendering choice is how a palette stops matching the
+    company's real identity.
+
+    Lightness is reduced in HLS with HUE AND SATURATION HELD CONSTANT. Scaling
+    RGB uniformly instead looks correct on a mid-tone but desaturates a light
+    colour toward grey -- #A5D3FF came out #6F8FAD, a muddy slate that no
+    longer reads as the brand at all. Working in HLS keeps the colour on-brand.
+    """
+    if contrast_on_white_text(hex_color) >= minimum:
+        return hex_color
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    while light > 0.02:
+        light -= 0.02
+        rr, gg, bb = colorsys.hls_to_rgb(hue, light, sat)
+        out = "#%02X%02X%02X" % (round(rr * 255), round(gg * 255), round(bb * 255))
+        if contrast_on_white_text(out) >= minimum:
+            return out
+    return "#000000"
 
 
 def datauri_svg(svg: str) -> str:

@@ -41,8 +41,8 @@ calc AS (
     SELECT
         product, product_order, balance_type, state, state_tilt, period_month, month_index, delinq_rate,
         yield_rate, funding_rate,
-        ROUND(bal_base * state_share * (1 + state_tilt) * trend * seasonal, 0) AS avg_balances,
-        ROUND(fee_base * state_share * (1 + state_tilt) * trend * seasonal * event_factor, 2) AS fee_income,
+        ROUND(bal_base * state_share * (1 + state_tilt) * trend * seasonal, 4) AS avg_balances,
+        ROUND(fee_base * state_share * (1 + state_tilt) * trend * seasonal * event_factor, 5) AS fee_income,
         ROUND(members_base * state_share * POWER(1 + 0.075 / 12, month_index), 0) AS members_k,
         -- Originations run roughly 6% of balances a month for lending products.
         ROUND(bal_base * state_share * 0.060 * trend * seasonal * event_factor, 1) AS originations,
@@ -54,9 +54,18 @@ calc AS (
 fin AS (
     SELECT
         c.*,
-        ROUND(avg_balances * yield_rate / 12, 2)                        AS interest_income,
-        ROUND(avg_balances * funding_eff / 12, 2)                       AS interest_expense,
-        ROUND(avg_balances * provision_rate / 12, 2)                    AS provision
+        -- 6dp, NOT 2dp. These are per-state-per-month figures in $MM, so
+        -- rounding to cents quantises them at $10K. That is immaterial for a
+        -- lender whose monthly interest per row runs into the $MMs, but for a
+        -- business whose spread rate is 1-3% the per-row figure is only
+        -- ~$0.03MM and cents rounding is a 17%-per-row quantum. Measured on
+        -- SimplifyVMS's invoice-exception build: it inflated the headline by
+        -- +8.5% and distorted individual channels by -30% to +38%, and it was
+        -- also why the page-2 modeler baseline could not be reconciled with
+        -- the page-1 headline for the same metric.
+        ROUND(avg_balances * yield_rate / 12, 6)                        AS interest_income,
+        ROUND(avg_balances * funding_eff / 12, 6)                       AS interest_expense,
+        ROUND(avg_balances * provision_rate / 12, 6)                    AS provision
     FROM calc c
 )
 SELECT
@@ -75,14 +84,21 @@ SELECT
     avg_balances                                               AS "Avg Balances",
     interest_income                                            AS "Interest Income",
     interest_expense                                           AS "Interest Expense",
-    ROUND(interest_income - interest_expense, 2)               AS "Net Interest Income",
+    -- 6dp throughout, for the same reason the `fin` CTE uses it: these are
+    -- per-state-per-month $MM figures, so cents rounding quantises them at
+    -- $10K. Raising precision only in `fin` was not enough -- this second
+    -- rounding layer re-quantised the very columns the KPIs and the ranked
+    -- table read, and it is what kept the lowest-spread channel (Direct
+    -- Sourcing, $0.82M real) reporting $0.50M on page 1. Display formatting,
+    -- not storage, is where rounding belongs.
+    ROUND(interest_income - interest_expense, 6)               AS "Net Interest Income",
     fee_income                                                 AS "Fee Income",
-    ROUND(interest_income - interest_expense + fee_income, 2)  AS "Net Revenue",
+    ROUND(interest_income - interest_expense + fee_income, 6)  AS "Net Revenue",
     provision                                                  AS "Provision",
-    ROUND((interest_income - interest_expense + fee_income) * opex_ratio, 2) AS "Opex",
+    ROUND((interest_income - interest_expense + fee_income) * opex_ratio, 6) AS "Opex",
     ROUND(interest_income - interest_expense + fee_income
           - provision
-          - (interest_income - interest_expense + fee_income) * opex_ratio, 2)
+          - (interest_income - interest_expense + fee_income) * opex_ratio, 6)
                                                                AS "Contribution Profit",
     ROUND(delinq_rate, 4)                                      AS "Delinquency Rate",
     ROUND(yield_rate * 100, 2)                                 AS "Yield Pct",
