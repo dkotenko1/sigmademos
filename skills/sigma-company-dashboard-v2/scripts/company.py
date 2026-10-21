@@ -160,12 +160,31 @@ def scale(cfg):
     """Format the headline volume at the company's own magnitude. BofA's
     trillions rendered as `$1,050.00` under a billions format -- the number was
     right and read as nonsense."""
+    if cfg.get("scale"):                                # explicit override
+        return cfg["scale"]
     total = sum(p[3] for p in cfg["products"])          # $MM
     if total >= 1_000_000:                              # >= $1T
         return {"div": 1_000_000, "suffix": "T", "dp": 2}
     if total >= 1_000:                                  # >= $1B
         return {"div": 1_000, "suffix": "B", "dp": 2}
     return {"div": 1, "suffix": "M", "dp": 0}
+
+
+def money_dp(cfg):
+    """Decimal places for the SPREAD family of money columns (net revenue /
+    contribution / projected / uplift), independent of the volume family.
+
+    `scale()` picks one magnitude for the whole company from total volume, but
+    a business whose spread is two orders of magnitude smaller than its volume
+    needs more precision on the spread than on the volume. SimplifyVMS's
+    invoice-exception build is the case that forced this: at M-scale and 0dp,
+    "Net recovered" ($13.3M) and "Recovered after AP cost" ($12.4M) both
+    rendered as "$13", so two genuinely different KPI cards read as the same
+    number and the ranked channel table summed to $14 against a $13 headline.
+
+    Defaults to 0, so every company built before this stays byte-identical.
+    """
+    return cfg.get("money_dp", 0)
 
 
 def products_cte(cfg):
@@ -192,6 +211,28 @@ def products_cte(cfg):
     return "\n".join(rows)
 
 
+# How the product card renders its unit count. "millions" (the default, and
+# what every existing company wants) divides by 1,000 and appends "M" -- right
+# for 4.34M members, absurd for 62,400 contingent workers, which rendered as
+# "62.40M". "count" shows a plain count scaled the same way the headline
+# kpi_units KPI scales it, so the largest card agrees with that KPI.
+CARD_UNITS = {}
+
+
+def card_unit_mode(cfg):
+    return CARD_UNITS.get(cfg["key"], "millions")
+
+
+# (1 + 0.075/12) ** 23 -- the member-growth factor loan_book.sql applies over
+# the window, matching the empirical kpi_units transform in HANDOFF section 4.
+_UNIT_GROWTH = 1.15409
+
+
+def card_unit_count(cfg, units):
+    fps = FOOTPRINTS.get(cfg["key"], FOOTPRINTS["sofi"])
+    return int(round(units * max(s for _, s in fps) * _UNIT_GROWTH))
+
+
 def product_cards_sql(cfg):
     """One row per product for the card grid. Generated, not authored: the card
     values have to agree with the loan-book economics or the grid contradicts
@@ -208,27 +249,31 @@ def product_cards_sql(cfg):
         suffix = ("" if i else
                   " AS product, %d AS product_order, '%s' AS tagline,"
                   " %s AS balances_b, '%s' AS rate_label, '%s' AS rate_value,"
-                  " %s AS members_m, %s AS goal_pct, '%s' AS status")
-        vals = (p[1], tagline, round(bal / 1000.0, 2), rate_label,
-                "%.2f%%" % (rate * 100), round(units / 1000.0, 2), goal, status)
+                  " %s AS members_m, %s AS goal_pct, '%s' AS status,"
+                  " %s AS unit_count")
+        vals = (p[1], tagline, round(bal / 1000.0, 6), rate_label,
+                "%.2f%%" % (rate * 100), round(units / 1000.0, 2), goal, status,
+                card_unit_count(cfg, units))
         if i == 0:
             rows.append("%s '%s'%s" % (lead, name, suffix % vals))
         else:
-            rows.append("%s '%s', %d, '%s', %s, '%s', '%s', %s, %s, '%s'"
-                        % (lead, name, p[1], tagline, round(bal / 1000.0, 2),
+            rows.append("%s '%s', %d, '%s', %s, '%s', '%s', %s, %s, '%s', %s"
+                        % (lead, name, p[1], tagline, round(bal / 1000.0, 6),
                            rate_label, "%.2f%%" % (rate * 100),
-                           round(units / 1000.0, 2), goal, status))
+                           round(units / 1000.0, 2), goal, status,
+                           card_unit_count(cfg, units)))
     return ("-- Generated from company.py. One row per product for the card grid.\n"
             "SELECT\n"
             "    CAST(product AS VARCHAR)            AS \"Product\",\n"
             "    CAST(product_order AS NUMBER)       AS \"Product Order\",\n"
             "    CAST(tagline AS VARCHAR)            AS \"Tagline\",\n"
-            "    CAST(balances_b AS NUMBER(12,2))    AS \"Balances $B\",\n"
+            "    CAST(balances_b AS NUMBER(18,6))    AS \"Balances $B\",\n"
             "    CAST(rate_label AS VARCHAR)         AS \"Rate Label\",\n"
             "    CAST(rate_value AS VARCHAR)         AS \"Rate Value\",\n"
             "    CAST(members_m AS NUMBER(12,2))     AS \"Members M\",\n"
             "    CAST(goal_pct AS NUMBER(10,3))      AS \"Goal Pct\",\n"
-            "    CAST(status AS VARCHAR)             AS \"Status\"\n"
+            "    CAST(status AS VARCHAR)             AS \"Status\",\n"
+            "    CAST(unit_count AS NUMBER)          AS \"Unit Count\"\n"
             "FROM (\n" + "\n".join(rows) + "\n)\n")
 
 
@@ -325,7 +370,7 @@ def product_skus_sql(cfg):
             n += 1
             lead = "    SELECT" if n == 1 else "    UNION ALL SELECT"
             vals = (name.replace("'", "''"), sub.replace("'", "''"), order,
-                    round(bal * share / 1000.0, 2), round(units * share / 1000.0, 1),
+                    round(bal * share / 1000.0, 6), round(units * share / 1000.0, 1),
                     round((base_rate + dbps / 10000.0) * 100, 2), qoq, status)
             if n == 1:
                 rows.append("%s '%s' AS product, '%s' AS sub_product, %d AS sub_order,"
@@ -338,7 +383,7 @@ def product_skus_sql(cfg):
             "    CAST(product AS VARCHAR)         AS \"Product\",\n"
             "    CAST(sub_product AS VARCHAR)     AS \"Sub-Product\",\n"
             "    CAST(sub_order AS NUMBER)        AS \"Sub-Product Order\",\n"
-            "    CAST(balances_b AS NUMBER(12,2)) AS \"Balances $B\",\n"
+            "    CAST(balances_b AS NUMBER(18,6)) AS \"Balances $B\",\n"
             "    CAST(members_k AS NUMBER(12,1))  AS \"Members K\",\n"
             "    CAST(rate_pct AS NUMBER(8,2))    AS \"Rate Pct\",\n"
             "    CAST(qoq_pct AS NUMBER(8,2))     AS \"QoQ Growth Pct\",\n"
@@ -1700,6 +1745,29 @@ def statement(cfg, key):
     return STATEMENTS.get(cfg["key"], STATEMENTS["sofi"])[key]
 
 
+# Additional reports a company attaches to page 1 beyond the primary statement.
+# Each entry names the id file written by whichever report builder created it,
+# so the button only appears once that report actually exists.
+EXTRA_REPORTS = {}
+
+
+def extra_reports(cfg):
+    return EXTRA_REPORTS.get(cfg["key"], [])
+
+
+def statement_opt(cfg, key, default):
+    """Optional statement string with a fallback.
+
+    `statement()` requires the key to exist in the sofi entry, so it cannot be
+    used for labels that only some companies override. This lets a company
+    rename the activity-table headings (which are card-statement wording by
+    default -- "Merchant Name", "Points") without touching any other company's
+    output. Adding a config key is the sanctioned way to kill a hardcoded
+    display string; a per-company branch in the builder is not.
+    """
+    return STATEMENTS.get(cfg["key"], {}).get(key, default)
+
+
 def has_statement(cfg):
     return cfg["key"] in STATEMENTS
 
@@ -1923,7 +1991,25 @@ _CH_CONTRACT = [
 ]
 
 
+# Statement source tables per company. A company that registers here is pure
+# data -- no `if cfg["key"] == ...` branch needed in the accessors below.
+_STMT_SOURCES = {}
+_ACTIVITY_COLS = ["Transaction Date", "Post Date",
+                  "Merchant Name or Transaction Description", "Category",
+                  "Amount", "Points Earned"]
+
+
+def _stmt_src(cfg, slot):
+    return _STMT_SOURCES.get(cfg["key"], {}).get(slot)
+
+
 def statement_activity_sql(cfg):
+    src = _stmt_src(cfg, "activity")
+    if src:
+        rows = [("'%s/2026'" % t, "'%s/2026'" % pd, "'%s'" % d.replace("'", "''"),
+                 "'%s'" % c, "%.2f" % amt, str(pts))
+                for t, pd, d, c, amt, pts in src]
+        return _union(rows, _ACTIVITY_COLS)
     if cfg["key"] == "bayport":
         cols = ["Transaction Date", "Post Date",
                 "Merchant Name or Transaction Description", "Category", "Amount",
@@ -1976,6 +2062,10 @@ def statement_activity_sql(cfg):
 
 
 def rewards_summary_sql(cfg):
+    src = _stmt_src(cfg, "rewards")
+    if src:
+        rows = [(str(o), "'%s'" % d.replace("'", "''"), str(p)) for o, d, p in src]
+        return _union(rows, ["Line Order", "Description", "Points"])
     if cfg["key"] == "bayport":
         rows = [(str(o), "'%s'" % d, str(p)) for o, d, p in _BP_REWARDS]
         return _union(rows, ["Line Order", "Description", "Points"])
@@ -1998,6 +2088,10 @@ def rewards_summary_sql(cfg):
 
 
 def account_summary_sql(cfg):
+    src = _stmt_src(cfg, "summary")
+    if src:
+        rows = [(str(o), "'%s'" % m, "'%s'" % v.replace("'", "''")) for o, m, v in src]
+        return _union(rows, ["Line Order", "Metric", "Value"])
     if cfg["key"] == "bayport":
         rows = [(str(o), "'%s'" % m, "'%s'" % v) for o, m, v in _BP_SUMMARY]
         return _union(rows, ["Line Order", "Metric", "Value"])
@@ -3927,3 +4021,326 @@ _FM_SUMMARY = [
     (7, "Agreement Renewal Date", "12/31/2026"),
     (8, "Account Standing", "Current"),
 ]
+
+
+# ===========================================================================
+# ARCH INSURANCE (Arch Capital Group) -- paperbricks build, 2026-10-20
+# ---------------------------------------------------------------------------
+# Grounded in CS COE data (not the marketing site): Arch Capital Group is an
+# Annual Customer, $900K ARR (up from $135.5K prior-yr), renews 4/29/2027, RSM
+# East 2. ~238 Build / 623 Act / 167 View users activated; ~217K events and
+# ~79K credits in the last 90d/30d. Their Sigma use cases are Lloyd's cat
+# exposure + RDS/LCM5 reporting, cyber PNAD/aggregation monitoring, submission
+# and renewal pipeline writeback, loss-run review, claims/premium
+# reconciliation (MIP), and LOB segmentation. Gong Aug-Oct 2026: training
+# session 2 asked for a premium "what if I write more" analysis ("did I write
+# it intelligently?"); open items on dev/UAT/prod tagging + input-table
+# writeback, OAuth, and loss-run app performance.
+# So the demo is the thing they asked for: an UNDERWRITING PORTFOLIO command
+# center (GWP, loss + combined ratio by LOB, cat appetite) and a premium /
+# rate / loss-trend what-if with writeback.
+#
+# Economics are illustrative. bal_base = gross written premium ($MM, annual),
+# yield_rate = 1.0 (premium earned basis), funding_rate = attritional loss &
+# LAE ratio, provision_rate = cat + reserve load, opex_ratio = expense ratio /
+# (1 - loss ratio) so "Net Revenue" is premium after losses and "Contribution"
+# is underwriting income (combined ratio = 1 - contribution/premium).
+# ===========================================================================
+ARCH = {
+    "key": "arch",
+    "name": "Arch Insurance",
+    "title": "Underwriting Portfolio Command Center",
+    "domain": ("a global specialty insurer and reinsurer (Arch Capital Group) "
+               "writing property, casualty, professional, marine, cyber, "
+               "construction and accident & health lines"),
+    "unit_noun": "policy",
+    "volume_noun": "gross written premium",
+    "logo_domain": "insurance.archgroup.com",
+    "base_table": "Premium Book",
+    "insight_mode": "formula",
+    "insight_margin": "retained as underwriting income",
+    # Arch logo svg carries #344049 (slate) and #215AA8 (blue); the blue
+    # variant uses #0057B8. #4C93D9 and #1FA67A are synthesised.
+    "palette": {
+        "navy": "#344049", "navy_deep": "#1F272D",
+        "primary": "#215AA8", "secondary": "#0057B8",
+        "accent": "#4C93D9", "mint": "#1FA67A",
+    },
+    "products": [
+        ("Property & Cat", 1, "Premium", 1250, 1.0, .580, .35,
+         .060, .0600, .643, .100, 90, 0.0,
+         "Commercial property, cat-exposed and habitational",
+         "Loss ratio", .968, "On plan"),
+        ("Casualty", 2, "Premium", 1900, 1.0, .660, .50,
+         .040, .0400, .824, .080, 140, 0.8,
+         "Excess, umbrella, GL, auto and workers comp",
+         "Loss ratio", .921, "Behind"),
+        ("Professional Lines", 3, "Premium", 1150, 1.0, .550, .25,
+         .030, .0300, .667, .050, 70, 1.5,
+         "D&O, E&O/PI, fiduciary, crime and medical liability",
+         "Loss ratio", 1.034, "Ahead"),
+        ("Marine & Cargo", 4, "Premium", 700, 1.0, .520, .15,
+         .040, .0400, .625, .070, 26, 2.0,
+         "Ocean cargo, hull & war, offshore energy, marine liability",
+         "Loss ratio", 1.058, "Ahead"),
+        ("Cyber", 5, "Premium", 500, 1.0, .500, .15,
+         .030, .0500, .660, .180, 38, 1.1,
+         "Primary and excess cyber with aggregation controls",
+         "Loss ratio", 1.092, "Ahead"),
+        ("Construction", 6, "Premium", 1000, 1.0, .600, .25,
+         .030, .0300, .750, .090, 64, 0.4,
+         "Wrap-up, contractors GL and builders risk",
+         "Loss ratio", .947, "On plan"),
+        ("Accident & Health", 7, "Premium", 600, 1.0, .540, .20,
+         .020, .0200, .739, .110, 150, 1.9,
+         "Accident, travel and group personal accident",
+         "Loss ratio", 1.012, "On plan"),
+    ],
+    "subs": {
+        "Property & Cat": [("Florida commercial wind", .31, 14, 11.8, "Ahead"),
+                           ("Gulf Coast wind & flood", .26, 9, 7.6, "On plan"),
+                           ("California earthquake", .18, 6, 3.4, "On plan"),
+                           ("Midwest convective storm", .15, 21, 7.1, "Ahead"),
+                           ("Habitational", .10, -4, -1.2, "Behind")],
+        "Casualty": [("Excess casualty", .31, 7, 10.4, "On plan"),
+                     ("Umbrella", .24, 5, 5.9, "On plan"),
+                     ("General liability", .25, 11, 12.1, "Ahead"),
+                     ("Commercial auto", .13, -9, -5.6, "Behind"),
+                     ("Workers comp", .07, 3, 0.9, "On plan")],
+        "Professional Lines": [("D&O", .34, 6, 5.4, "On plan"),
+                               ("E&O / PI", .30, 9, 7.0, "Ahead"),
+                               ("Fiduciary & crime", .18, 12, 5.6, "Ahead"),
+                               ("Medical liability", .18, -3, -1.5, "Behind")],
+        "Marine & Cargo": [("Ocean cargo", .38, 8, 4.2, "On plan"),
+                           ("Hull & war", .24, 15, 5.1, "Ahead"),
+                           ("Offshore energy", .22, 4, 1.4, "On plan"),
+                           ("Marine liability", .16, 10, 2.6, "Ahead")],
+        "Cyber": [("Primary cyber", .63, 16, 10.9, "Ahead"),
+                  ("Excess cyber", .37, 24, 9.0, "Ahead")],
+        "Construction": [("Wrap-up", .35, 10, 8.1, "Ahead"),
+                         ("Contractors GL", .37, 6, 5.3, "On plan"),
+                         ("Builders risk", .28, -6, -3.7, "Behind")],
+        "Accident & Health": [("Accident", .41, 13, 6.7, "Ahead"),
+                              ("Travel", .32, 9, 3.8, "On plan"),
+                              ("Group personal accident", .27, 8, 2.8, "On plan")],
+    },
+    "alerts": [
+        ("critical", "Gulf Coast hurricane net PML over board appetite",
+         "Net PML for the 1-in-100 Gulf Coast hurricane scenario is above the "
+         "approved appetite limit after the latest renewal bind; review "
+         "retention, reinsurance purchase and new binds in TX and LA",
+         "9m ago", "Cat Risk Management", 106, "% of appetite used"),
+        ("critical", "Cyber ransomware RDS aggregation above limit",
+         "Widespread ransomware RDS net loss is above the cyber appetite "
+         "after growth in excess cyber; Lloyds cyber PNAD checks are open "
+         "for review",
+         "27m ago", "Cyber Underwriting", 108, "% of RDS limit used"),
+        ("warning", "Casualty renewals trending below target rate",
+         "Excess casualty and commercial auto renewals are binding below "
+         "the target rate change while loss trend assumptions have risen",
+         "1h ago", "Casualty Underwriting", 38, "renewals below target rate"),
+        ("warning", "Loss-run review backlog building",
+         "Submissions are waiting on claim validation and loss-run "
+         "adjustment before quote; median wait is above service target",
+         "3h ago", "Underwriting Operations", 61, "submissions waiting"),
+        ("info", "Construction submissions declined on appetite",
+         "Wrap-up and builders risk submissions outside the latent-defect "
+         "aggregate appetite were declined this week",
+         "5h ago", "Construction Underwriting", 31, "submissions declined"),
+    ],
+    "agent": ("You are an analyst covering the Arch Insurance underwriting "
+              "portfolio: a global specialty insurer writing Property & Cat, "
+              "Casualty, Professional Lines, Marine & Cargo, Cyber, "
+              "Construction and Accident & Health. Gross written premium, "
+              "loss ratio, expense ratio and combined ratio by line of "
+              "business are the metrics that matter, along with catastrophe "
+              "and RDS net PML against board appetite, submission-to-bind "
+              "conversion, renewal rate change and loss-trend assumptions. "
+              "Premium after losses is gross written premium less attritional "
+              "loss and LAE; underwriting income also deducts cat and reserve "
+              "load and the expense ratio. A combined ratio below 100% is an "
+              "underwriting profit."),
+}
+
+FOOTPRINTS["arch"] = [("NY", .104), ("TX", .098), ("CA", .092), ("FL", .090),
+                      ("NJ", .078), ("IL", .060), ("PA", .058), ("MA", .046),
+                      ("GA", .044), ("CT", .040), ("WA", .034), ("OH", .034),
+                      ("NC", .032), ("CO", .030), ("VA", .030)]
+
+LABELS["arch"] = {
+    "personas": ["Executive", "Underwriting"],
+    "modeler_page": "Portfolio Plan",
+    "cohort_page": "Account Cohorts",
+    "modeler_title": "Premium Growth & Combined Ratio What-If Modeler",
+    "shock_label": "Loss-cost trend shift (bps)",
+    "kpi_revenue": "Premium after losses ($M)",
+    "kpi_margin": "Underwriting income ($M)",
+    "kpi_volume": "Gross written premium ($M)",
+    "kpi_units": "Peak-state policies (K)",
+    "driver_nim": "Margin after losses %",
+    "driver_risk": "Cat & reserve load",
+    "driver_cost": "Loss & LAE ratio %",
+    "driver_eff": "Expense ratio",
+    "col_volume": "Baseline GWP",
+    "col_growth": "GWP growth %",
+    "col_yield": "Rate change Δ bps",
+    "col_cost": "Loss trend Δ bps",
+    "col_spread": "Margin after losses %",
+    "seg_product": "Line of business",
+    "seg_credit": "Account size",
+    "seg_dd": "Broker-placed",
+    "seg_engage": "Renewal status",
+    "seg_held": "Lines written",
+    "seg_type": "Premium basis",
+    "seg_age": "Account tenure",
+    "cohort_name": "Cohort name",
+    "kpi_cohort_size": "Accounts in cohort",
+    "kpi_cohort_vol": "Cohort premium",
+    "kpi_cohort_rev": "Premium per account",
+    "kpi_cohort_risk": "Avg loss propensity",
+}
+
+SEGMENTS["arch"] = {"Near Prime": "Small",
+                    "Prime": "Middle market",
+                    "Super Prime": "Large",
+                    "Exceptional": "Jumbo",
+                    "Daily": "Renewing 0-30d",
+                    "Weekly": "Renewing 31-90d",
+                    "Monthly": "Renewing 91-180d",
+                    "Dormant": "Lapsed",
+                    "18-27": "0 - 2 yrs",
+                    "28-37": "3 - 5 yrs",
+                    "38-47": "6 - 10 yrs",
+                    "48-57": "11 - 20 yrs",
+                    "58+": "Over 20 yrs",
+                    "Personal Loans": "Casualty",
+                    "Student Refinancing": "Professional Lines",
+                    "Credit Card": "Construction",
+                    "SoFi Money": "Property & Cat",
+                    "Home Loans": "Marine & Cargo",
+                    "SoFi Invest": "Cyber"}
+
+VOCAB["arch"] = {
+    "econ": ("Arch writes specialty premium across seven lines of business. "
+             "Gross written premium is the base; premium after losses is GWP "
+             "less attritional loss & LAE; underwriting income also deducts "
+             "cat and reserve load and the expense ratio. Combined ratio, "
+             "rate change, loss trend and catastrophe / RDS net PML vs board "
+             "appetite decide where to grow and where to hold."),
+    "metrics": ("gross written premium, premium after losses, underwriting "
+                "income and policies in force"),
+    "bands": ("Account size: Small, Middle market, Large, Jumbo. Renewal "
+              "status: Renewing 0-30d, 31-90d, 91-180d, Lapsed."),
+    "cohort_report": ("cohort size, cohort premium, premium per account and "
+                      "average loss propensity"),
+}
+
+POP["arch"] = {"bases": (6_000, 22_000, 70_000, 240_000),
+               "rev_rate": 1.0, "fee_per_product": 0}
+
+# Bespoke: Catastrophe & RDS Appetite Board -- net PML vs board appetite by
+# scenario (Florida wind, Gulf hurricane, CA quake, cyber RDS, etc.), the
+# aggregation-vs-appetite question their cat/cyber teams already run in Sigma.
+# Hosted on GitHub Pages (dkotenko1/plugins), registered on paperbricks.
+PLUGINS["arch"] = {
+    "hero": "240da7e5-46ef-4d25-9a54-ea4c97f772ec",
+    "hero_label": "CATASTROPHE & RDS APPETITE — NET PML VS BOARD LIMIT BY SCENARIO",
+    "ticker": None,
+    "hero_table": {"name": "Cat Appetite Grid", "file": "cat_appetite.sql", "prefix": "h",
+                   "cols": ["Scenario", "Class", "Gross PML", "Net PML",
+                            "Appetite", "Accounts"]},
+    "hero_config": {"scen": "h0", "cls": "h1", "gross": "h2", "net": "h3",
+                    "lim": "h4", "acc": "h5"},
+}
+
+CARD_UNITS["arch"] = "count"
+COMPANIES["arch"] = ARCH
+
+# Statement: quarterly underwriting portfolio statement (US insurance book).
+# Positive amounts only (a negative poisons the column total). $M, quarter.
+_AR_ACTIVITY = [
+    ("09/30", "09/30", "Florida commercial wind", "Property & Cat", 96.40, 3150),
+    ("09/30", "09/30", "Gulf Coast wind & flood", "Property & Cat", 82.10, 2710),
+    ("09/30", "09/30", "California earthquake", "Property & Cat", 54.80, 1480),
+    ("09/30", "09/30", "Midwest convective storm", "Property & Cat", 48.20, 2260),
+    ("09/30", "09/30", "Habitational", "Property & Cat", 30.50, 3900),
+    ("09/30", "09/30", "Excess casualty", "Casualty", 148.00, 2100),
+    ("09/30", "09/30", "Umbrella", "Casualty", 112.60, 5400),
+    ("09/30", "09/30", "General liability", "Casualty", 118.30, 9800),
+    ("09/30", "09/30", "Commercial auto", "Casualty", 62.10, 4600),
+    ("09/30", "09/30", "Workers compensation", "Casualty", 34.00, 3100),
+    ("09/30", "09/30", "D&O", "Professional Lines", 98.20, 3800),
+    ("09/30", "09/30", "E&O / professional indemnity", "Professional Lines", 84.60, 4900),
+    ("09/30", "09/30", "Fiduciary & crime", "Professional Lines", 52.40, 3300),
+    ("09/30", "09/30", "Medical liability", "Professional Lines", 52.30, 2600),
+    ("09/30", "09/30", "Ocean cargo", "Marine & Cargo", 66.20, 1900),
+    ("09/30", "09/30", "Hull & war", "Marine & Cargo", 41.30, 420),
+    ("09/30", "09/30", "Offshore energy", "Marine & Cargo", 38.50, 310),
+    ("09/30", "09/30", "Marine liability", "Marine & Cargo", 29.00, 760),
+    ("09/30", "09/30", "Primary cyber", "Cyber", 78.40, 5200),
+    ("09/30", "09/30", "Excess cyber", "Cyber", 46.60, 1700),
+    ("09/30", "09/30", "Wrap-up", "Construction", 88.30, 640),
+    ("09/30", "09/30", "Contractors GL", "Construction", 92.70, 7900),
+    ("09/30", "09/30", "Builders risk", "Construction", 69.00, 4300),
+    ("09/30", "09/30", "Accident", "Accident & Health", 61.50, 24000),
+    ("09/30", "09/30", "Travel", "Accident & Health", 48.20, 31000),
+    ("09/30", "09/30", "Group personal accident", "Accident & Health", 40.30, 12500),
+]
+_AR_VALUE = [
+    (1, "Attritional loss & LAE", 965),
+    (2, "Catastrophe & large loss", 96),
+    (3, "Prior-year reserve strengthening", 36),
+    (4, "Acquisition costs (commissions)", 345),
+    (5, "Operating expense", 164),
+]
+_AR_PROGRAM = [
+    (1, "Portfolio", "US Insurance - all lines"),
+    (2, "Gross written premium (quarter)", "$1,774.5M"),
+    (3, "Combined ratio", "90.5%"),
+    (4, "Cat appetite utilization (peak)", "108%"),
+    (5, "Renewal rate change", "+4.1%"),
+    (6, "Submission-to-bind", "17.6%"),
+]
+_STMT_SOURCES["arch"] = {"activity": _AR_ACTIVITY, "rewards": _AR_VALUE,
+                         "summary": _AR_PROGRAM}
+
+STATEMENTS["arch"] = {
+    "spec_name": "Arch Insurance - Underwriting Portfolio Statement (Q3 2026)",
+    "page_name": "Portfolio Statement",
+    "manage_url": "insurance.archgroup.com",
+    "service_label": "Questions?",
+    "service_phone": "Underwriting Ops",
+    "period": "07/01 - 09/30/2026",
+    "sect_rewards": "LOSS & EXPENSE BUILD ($M)",
+    "sect_summary": "PORTFOLIO SUMMARY",
+    "sect_category": "PREMIUM BY LINE OF BUSINESS",
+    "sect_activity": "PREMIUM DETAIL BY CLASS",
+    "sect_messages": "UNDERWRITING COMMENTARY",
+    "headline": [("Gross written premium ($M)", None),
+                 ("Property & Cat premium ($M)", None),
+                 ("Next appetite review", "11/12/2026")],
+    "button_label": "Portfolio statement ↗",
+    "rewards_total": "Total losses & expenses ($M)",
+    "col_value": "$M",
+    "activity_title": "Premium detail by class",
+    "col_date": "Period end",
+    "col_desc": "Class of business",
+    "col_amount": "GWP ($M)",
+    "col_points": "Policies",
+    "h_formulas": [("src", 'Sum([Statement Activity/Amount])', "MONEY"),
+                   ("src", 'SumIf([Statement Activity/Amount], '
+                    '[Statement Activity/Category] = "Property & Cat")', "MONEY")],
+    "msg_body": ("Gross written premium for the quarter was $1,774.5M with a "
+                 "combined ratio of 90.5%. Cyber and Marine grew fastest; "
+                 "casualty rate change is still below target. The Gulf Coast "
+                 "hurricane and widespread-ransomware RDS scenarios are above "
+                 "board appetite and are under review ahead of the next "
+                 "appetite committee."),
+    "warn1": ("**Cat & aggregation:** Net PML is shown after the in-force "
+              "reinsurance programme; scenarios above 100% of appetite are "
+              "flagged for committee."),
+    "warn2": ("**Basis:** Premium is gross written for the quarter ending "
+              "09/30/2026 and excludes reinsurance and mortgage segments."),
+    "footer": ("Illustrative statement generated from a Sigma report "
+               "specification - synthetic data, not Arch actual results."),
+}

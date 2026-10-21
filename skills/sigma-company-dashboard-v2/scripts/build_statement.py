@@ -26,6 +26,9 @@ import sigmaapi as S
 CFG = CO.COMPANIES[os.environ.get("COMPANY", "sofi")]
 B.apply(CFG)
 ST_ = lambda k: CO.statement(CFG, k)
+# Optional labels default to the card-statement wording every existing
+# company already ships, so overriding them is opt-in per company.
+STO_ = lambda k, d: CO.statement_opt(CFG, k, d)
 
 SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
 SPECS = pathlib.Path(__file__).resolve().parent.parent / "specs"
@@ -42,6 +45,7 @@ NUM0 = {"kind": "number", "formatString": ",.0f", "digitGroupingSymbol": ",",
         "digitGroupingSize": [3]}
 DATE = {"kind": "datetime", "formatString": "%m/%d/%Y"}
 
+RW_TOP, RW_H = 26, 176   # rewards/value table box
 ST = "Statement Activity"
 ST_COLS = ["Transaction Date", "Post Date",
            "Merchant Name or Transaction Description", "Category", "Amount",
@@ -63,7 +67,9 @@ def txt(eid, body, color=B.TEXT_DARK, align=None, valign=None):
     if align:
         el["align"] = align
     if valign:
-        el["verticalAlign"] = valign
+        # 2026-09 enum rename: start|middle|end -> top|center|bottom.
+        el["verticalAlign"] = {"start": "top", "middle": "center",
+                               "end": "bottom"}.get(valign, valign)
     return el
 
 
@@ -172,8 +178,11 @@ add({"id": "p1-donut", "kind": "donut-chart",
          {"id": "dn-c", "formula": "[%s/Category]" % ST, "name": "Category"},
          {"id": "dn-v", "formula": "Sum([%s/Amount])" % ST, "name": "Amount",
           "format": MONEY}],
-     "value": {"id": "dn-v"},
-     "color": {"id": "dn-c"},
+     # 2026-09: the chart "shelf" sub-objects take `columnId`, not `id` --
+     # the same rename that hit region-map's `region` and pivot-table's
+     # `rowsBy`/`columnsBy`. Masked as `Invalid kind: "donut-chart"`.
+     "value": {"columnId": "dn-v"},
+     "color": {"columnId": "dn-c"},
      "name": {"visibility": "hidden"},
      "legend": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "padding": "none"}},
@@ -188,7 +197,7 @@ add({"id": "p1-k-bal", "kind": "kpi-chart",
      "value": {"columnId": "p1v-bal", "color": B.NAVY, "fontSize": 27},
      "name": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "padding": "none"},
-     "layout": {"anchor": "start"}},
+     "layout": {"anchor": "left"}},
     "p1", hx, 22, 190, 40)
 
 add(txt("p1-l-min", LBL % ST_("headline")[1][0], B.TEXT_MUTED), "p1", hx, 66, 190, 22)
@@ -199,7 +208,7 @@ add({"id": "p1-k-min", "kind": "kpi-chart",
      "value": {"columnId": "p1v-min", "color": B.NAVY, "fontSize": 27},
      "name": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "padding": "none"},
-     "layout": {"anchor": "start"}},
+     "layout": {"anchor": "left"}},
     "p1", hx, 84, 190, 40)
 
 add(txt("p1-l-due", LBL % ST_("headline")[2][0], B.TEXT_MUTED), "p1", hx, 128, 190, 22)
@@ -211,20 +220,27 @@ add({"id": "p1-rw", "kind": "table",
      "source": {"elementId": "src-rw", "kind": "table"},
      "columns": [
          {"id": "rwd", "formula": "[%s/Description]" % RW, "name": "Description"},
-         {"id": "rwp", "formula": "[%s/Points]" % RW, "name": "Points", "format": NUM0}],
+         {"id": "rwp", "formula": "[%s/Points]" % RW,
+          "name": STO_("col_value", "Points"), "format": NUM0}],
      "tableComponents": {"summaryBar": "hidden"},
      "tableStyle": {"preset": "presentation", "cellSpacing": "small"},
      "name": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "borderColor": B.BORDER,
                "borderWidth": 1, "borderRadius": "round"}},
-    "p1", COL2_X, 26, COL_W, 252)
+    "p1", COL2_X, RW_TOP, COL_W - 24, RW_H)
 
+# Derived from RW_H, never literal offsets: the total row used to sit at a
+# hardcoded y=284/288/290 sized for a 252px table, so shrinking the table left
+# a ~110px hole above the total and any future height change would desync it
+# again. Same rule the header columns already follow.
+_RW_RULE_Y = RW_TOP + RW_H + 6
+_RW_LBL_Y = _RW_RULE_Y + 6
 add({"id": "p1-rw-rule", "kind": "divider", "style": {"color": B.NAVY}},
-    "p1", COL2_X, 284, COL_W, 2)
+    "p1", COL2_X, _RW_RULE_Y, COL_W - 24, 2)
 add(txt("p1-rw-lbl",
         '<span style="color: %s; font-size: 13px">**%s**</span>'
         % (B.NAVY, ST_("rewards_total"))),
-    "p1", COL2_X, 290, 200, 26)
+    "p1", COL2_X, _RW_LBL_Y, 200, 26)
 add({"id": "p1-rw-tot", "kind": "kpi-chart",
      "source": {"elementId": "src-rw", "kind": "table"},
      "columns": [{"id": "rwt", "formula": "Sum([%s/Points])" % RW,
@@ -232,10 +248,14 @@ add({"id": "p1-rw-tot", "kind": "kpi-chart",
      "value": {"columnId": "rwt", "color": B.SOFI_BRIGHT, "fontSize": 20},
      "name": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "padding": "none"},
-     "layout": {"anchor": "middle", "horizontalAlign": "end"}},
-    "p1", COL2_X + 200, 288, COL_W - 200, 28)
+     "layout": {"anchor": "right"}},
+    "p1", COL2_X + 200, _RW_LBL_Y - 2, COL_W - 224, 28)
 
-y = 330
+# Start the next band below whichever column is taller, with an assert so a
+# future height edit fails loudly instead of silently overlapping.
+_LEFT_BOTTOM = 186          # p1-due bottom (donut + headline figures)
+y = max(_LEFT_BOTTOM, _RW_LBL_Y + 26) + 14
+assert y >= _RW_LBL_Y + 26, "top band overlaps the rewards total"
 add({"id": "p1-rule1", "kind": "divider", "style": {"color": B.BORDER}},
     "p1", MARGIN, y, CW, 1)
 y += 14
@@ -252,7 +272,7 @@ add({"id": "p1-as", "kind": "table",
      "name": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "borderColor": B.BORDER,
                "borderWidth": 1, "borderRadius": "round"}},
-    "p1", MARGIN, y + 22, LEFT_W, 246)
+    "p1", MARGIN, y + 22, LEFT_W, 210)
 
 add(txt("p1-h-cat", SECT % ST_("sect_category")), "p1", COL2_X, y, COL_W, 20)
 add({"id": "p1-cat", "kind": "bar-chart",
@@ -268,8 +288,8 @@ add({"id": "p1-cat", "kind": "bar-chart",
      "name": {"visibility": "hidden"}, "legend": {"visibility": "hidden"},
      "style": {"backgroundColor": "#FFFFFF", "borderColor": B.BORDER,
                "borderWidth": 1, "borderRadius": "round"}},
-    "p1", COL2_X, y + 22, COL_W, 246)
-y += 284
+    "p1", COL2_X, y + 22, COL_W - 24, 210)
+y += 248
 
 add({"id": "p1-rule2", "kind": "divider", "style": {"color": B.BORDER}},
     "p1", MARGIN, y, CW, 1)
@@ -279,14 +299,14 @@ y += 14
 add(txt("p1-h-msg", SECT % ST_("sect_messages")), "p1", MARGIN, y, CW, 20)
 y += 24
 add(txt("p1-msg", ST_("msg_body"), B.TEXT_DARK),
-    "p1", MARGIN, y, CW, 68)
-y += 76
+    "p1", MARGIN, y, CW, 72)
+y += 80
 
 add(txt("p1-warn1", ST_("warn1"), B.TEXT_DARK),
-    "p1", MARGIN, y, LEFT_W, 100)
+    "p1", MARGIN, y, LEFT_W, 80)
 add(txt("p1-warn2", ST_("warn2"), B.TEXT_DARK),
-    "p1", COL2_X, y, COL_W, 100)
-y += 108
+    "p1", COL2_X, y, COL_W, 80)
+y += 88
 
 add(txt("p1-note",
         '<span style="color: %s">Continued on the next page — full transaction '
@@ -300,26 +320,33 @@ y = 0
 # An H1 needs more box than its font size or the glyphs clip and the next
 # element sits on top of it -- 34px was cropping the descenders and colliding
 # with the table's top border.
-add(txt("p2-h1", CO.STATEMENTS.get(CFG["key"], {}).get("page2_title", "# Account activity"),
-        B.NAVY), "p2", MARGIN, y, CW, 54)
+# Kept the STO_ form over the repo's STATEMENTS["page2_title"] lookup: same
+# capability, but STO_ routes every optional statement label through one
+# accessor with a documented default instead of a per-key dict dig.
+add(txt("p2-h1", "# " + STO_("activity_title", "Account activity"), B.NAVY),
+    "p2", MARGIN, y, CW, 54)
 y += 62
 
 add({"id": "p2-tbl", "kind": "table",
      "source": {"elementId": "src", "kind": "table"},
      "columns": [
          {"id": "t-date", "formula": "[%s/Transaction Date]" % ST,
-          "name": "Date of Transaction", "format": DATE},
+          "name": STO_("col_date", "Date of Transaction"), "format": DATE},
          {"id": "t-merch", "formula": "[%s/Merchant Name or Transaction Description]" % ST,
-          "name": "Merchant Name or Transaction Description"},
+          "name": STO_("col_desc",
+                       "Merchant Name or Transaction Description")},
          {"id": "t-cat", "formula": "[%s/Category]" % ST, "name": "Category"},
-         {"id": "t-amt", "formula": "[%s/Amount]" % ST, "name": "$ Amount",
+         {"id": "t-amt", "formula": "[%s/Amount]" % ST,
+          "name": STO_("col_amount", "$ Amount"),
           "format": MONEY},
          # group subtotals have to be their OWN aggregate columns -- listing the
          # row-level columns in `calculations` renders "multiple values"
          {"id": "t-pts-sum", "formula": "Sum([%s/Points Earned])" % ST,
-          "name": "Points", "format": NUM0},
+          "name": STO_("col_points", "Points"), "format": NUM0},
+         # MONEY0, not MONEY: with cents the group subtotal is wide enough that
+         # Sigma truncates it to "$295,900...." in the rendered PDF.
          {"id": "t-amt-sum", "formula": "Sum([%s/Amount])" % ST,
-          "name": "Total", "format": MONEY}],
+          "name": "Total", "format": MONEY0}],
      # Reads as a grouped LIST rather than a grid: transactions collapse under
      # their spend category with a per-category subtotal, which is how a real
      # card statement organises activity.

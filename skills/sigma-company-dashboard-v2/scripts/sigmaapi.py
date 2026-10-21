@@ -211,6 +211,21 @@ def call(method, path, body=None, accept="application/json", retry_auth=True):
     if method == "POST" and m:
         return _run(["reports", "export",
                      "--params", _j({"reportId": m.group(1)}), "--json", _j(body)], path)
+    # shot.py's page enumeration -- it renders one PNG per page, so it needs
+    # the page list before it can export anything.
+    m = re.match(r"^/v2/workbooks/([^/]+)/pages$", path)
+    if method == "GET" and m:
+        return _run(["workbooks", "pages", "list",
+                     "--params", _j({"workbookId": m.group(1)})], path)
+    m = re.match(r"^/v2/reports/([^/]+)/pages$", path)
+    if method == "GET" and m:
+        return _run(["reports", "pages", "list",
+                     "--params", _j({"reportId": m.group(1)})], path)
+    m = re.match(r"^/v2/workbooks/([^/]+)/export$", path)
+    if method == "POST" and m:
+        return _run(["workbooks", "export",
+                     "--params", _j({"workbookId": m.group(1)}),
+                     "--json", _j(body)], path)
     raise NotImplementedError(
         "sigmaapi.call() has no CLI route for %s %s. The sigma CLI has no "
         "generic arbitrary-path escape hatch, so call() only covers the paths "
