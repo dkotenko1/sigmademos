@@ -24,7 +24,7 @@ COLS=[("col-order","ORDER_NUMBER","Order Number"),("col-date","DATE","Order Date
  ("col-rev","REVENUE","Revenue"),("col-margin","MARGIN","Margin")]
 tbl={"id":"tbl","kind":"table","source":{"connectionId":CONN,"statement":SQL,"kind":"sql"},
  "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],
- "name":BASE,"order":[c[0] for c in COLS],"visibleAsSource":True}
+ "name":BASE,"order":[c[0] for c in COLS]}
 
 # GPU Fleet — synthetic operational data for the heatmap plugin
 FLEET_SQL=("SELECT 'DC-'||LPAD(SEQ4()::string,3,'0') AS NODE_ID, 'Rack '||(MOD(SEQ4(),12)+1) AS RACK, "
@@ -64,7 +64,7 @@ for i,(title,mf,fmt,trend) in enumerate(KDEFS,1):
         return {"id":f"k{i}{sfx}","kind":"kpi-chart","source":{"elementId":"tbl","kind":"table"},
                 "columns":[{"id":f"k{i}{sfx}v","formula":mf.replace("§",period),"name":period,"format":fmt}],
                 "value":{"columnId":f"k{i}{sfx}v","color":"#FFFFFF"},"name":{"visibility":"hidden"},
-                "layout":{"anchor":"middle"},"style":dict(TRANS)}
+                "layout":{"anchor":"center"},"style":dict(TRANS)}
     kc=kpi("c","Current Period"); kp=kpi("p","Prior Year")
     line={"id":f"ln{i}","kind":"line-chart","source":{"elementId":"tbl","kind":"table"},
           "columns":[{"id":f"ln{i}m","formula":f"[{BASE}/Order Month]","name":"Month"},{"id":f"ln{i}v","formula":trend,"name":"Trend"}],
@@ -105,7 +105,7 @@ ai_body=('{{ Replace(CallText("'+AICONN+'", "CLAUDE-4-SONNET", '
  '& Text(Round(Sum(['+BASE+'/Margin])/1000000,0)) & "M, Units " '
  '& Text(Sum(['+BASE+'/Units])) & ". Note segment strength and margin health."), \'"\', \'\') }}')
 ai_box={"id":"c-ai","kind":"container","style":{"backgroundColor":"#EAF7DD","borderColor":"#8BC34A","borderWidth":1,"borderRadius":"round"}}
-ai_sum={"id":"txt-ai","kind":"text","body":"### ✨ AI Insight\n\n"+ai_body,"verticalAlign":"middle"}
+ai_sum={"id":"txt-ai","kind":"text","body":"### ✨ AI Insight\n\n"+ai_body,"verticalAlign":"center"}
 
 # ---- bar (Revenue by Segment, green) ----
 PASS=[("Segment","sg"),("Product","pr"),("Region","rg"),("State","st"),("City","ct"),("Customer","cu")]
@@ -120,7 +120,7 @@ bar={"id":"bar","kind":"bar-chart","source":{"elementId":"tbl","kind":"table"},
 
 # ---- plugin hero panel (GPU heatmap placeholder) ----
 plugc={"id":"c-plug","kind":"container","style":{"backgroundColor":"#EFF4EA","borderColor":"#C4D9A8","borderWidth":1,"borderRadius":"round"}}
-plugt={"id":"txt-plug","kind":"text","body":"🟢 **GPU Cluster Utilization** — plugin\n\n_Add the hosted heatmap here (Admin → Plugins → Add), bound to the **GPU Fleet** element:_\n\nscintillating-madeleine-4aceba.netlify.app","verticalAlign":"middle"}
+plugt={"id":"txt-plug","kind":"text","body":"🟢 **GPU Cluster Utilization** — plugin\n\n_Add the hosted heatmap here (Admin → Plugins → Add), bound to the **GPU Fleet** element:_\n\nscintillating-madeleine-4aceba.netlify.app","verticalAlign":"center"}
 
 elements=[masthead,logo,filters,ctrl_date,ctrl_region,ctrl_seg]+card_elems+[ai_box,ai_sum,bar,plugc,plugt,tbl,fleet]
 

@@ -1,4 +1,56 @@
+# LEGACY EXAMPLE (checked 2026-11-17): the POST now goes to /v2/workbooks with `contents`, but this
+# file still emits the pre-2026-08 layout XML dialect (<LayoutElement>/<GridContainer>) and the live API
+# rejects it ("unknown element ... expected Element, Container, or TabbedContainer"). Treat it as a
+# reference for element shapes only; for a working build use sigma-company-dashboard-v2/scripts/build_sofi.py.
 import json,sys,base64,urllib.request,urllib.error,xml.dom.minidom as _MD
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE,TOKEN,CONN,FOLDER=sys.argv[1:5]
 H={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"}
 def b64(s): return base64.b64encode(s.encode()).decode()
@@ -7,12 +59,12 @@ TINT={"backgroundColor":"#EEF3FC","borderColor":"#CFE0F5","borderWidth":1,"borde
 CUR={"kind":"number","formatString":"$.3~s","currencySymbol":"$","decimalSymbol":".","digitGroupingSymbol":",","digitGroupingSize":[3]}
 NUM={"kind":"number","formatString":",.3~s"}
 
-title={"id":"title","kind":"text","body":"# Cohort Builder — Proof of Concept","verticalAlign":"middle","style":{"color":INK}}
+title={"id":"title","kind":"text","body":"# Cohort Builder — Proof of Concept","verticalAlign":"center","style":{"color":INK}}
 subtitle={"id":"subtitle","kind":"text","body":("Demo of the agent-driven cohort pattern (reverse-engineered from demeng's Marketing Control Center). "
  "Swap the base table's columns for any population you segment — customers for marketing, patients for healthcare, "
  "members, students, accounts. Same mechanic every time: one filter control per dimension, one agent tool per filter, "
  "reactive KPIs, and a Save that inserts a real row (not a UI-only Action Sequence, which can't be authored from code)."),
- "verticalAlign":"middle","style":{"color":"#3A3A3A"}}
+ "verticalAlign":"center","style":{"color":"#3A3A3A"}}
 
 # synthetic customer population
 SQL="""WITH g AS (SELECT SEQ4() i FROM TABLE(GENERATOR(ROWCOUNT=>2000)))
@@ -24,7 +76,7 @@ SELECT 'CUST-'||LPAD(i::string,5,'0') AS CUST_ID,
   GET(ARRAY_CONSTRUCT('Yes','No','No','No'), MOD(i*11,4))::string AS IS_LAPSED,
   50+MOD(i*8191,4950) AS REVENUE
 FROM g"""
-pop={"id":"population","kind":"table","name":"Customer Population","visibleAsSource":True,
+pop={"id":"population","kind":"table","name":"Customer Population",
  "source":{"connectionId":CONN,"kind":"sql","statement":SQL},
  "columns":[{"id":"p-id","formula":"[Custom SQL/CUST_ID]","name":"Cust ID"},
    {"id":"p-age","formula":"[Custom SQL/AGE_GROUP]","name":"Age Group"},
@@ -39,7 +91,7 @@ pop={"id":"population","kind":"table","name":"Customer Population","visibleAsSou
 # control's `filters` block, so it always reflects the whole population regardless of the live
 # cohort filters. This is the "Base Case" equivalent from scenario modeling: a stable reference
 # to compare the live-filtered cohort against.
-baseline={"id":"population-baseline","kind":"table","name":"Population Baseline","visibleAsSource":True,
+baseline={"id":"population-baseline","kind":"table","name":"Population Baseline",
  "source":{"connectionId":CONN,"kind":"sql","statement":SQL},
  "columns":[{"id":"pb-id","formula":"[Custom SQL/CUST_ID]","name":"Cust ID"},
    {"id":"pb-rev","formula":"[Custom SQL/REVENUE]","name":"Revenue"}],
@@ -71,7 +123,7 @@ def flat_stat(elid,source_id,formula,label,fmt,color=INK,size=26):
      "columns":[{"id":elid+"v","formula":formula,"name":label,"format":fmt}],
      "value":{"columnId":elid+"v","color":color,"fontSize":size,"fontWeight":"bold"},
      "name":{"text":label,"color":LABEL_GRAY,"fontSize":11,"fontWeight":"bold"},
-     "layout":{"anchor":"start"},
+     "layout":{"anchor":"left"},
      "style":{"backgroundColor":"#FFFFFF","borderColor":"#E9ECF1","borderWidth":1,"borderRadius":"round"}}
 def cohort_card(elid,title,live_formula,base_formula,fmt):
     left=flat_stat(elid+"c","population",live_formula,title.upper()+" (COHORT)",fmt,color=BLUE,size=28)
@@ -159,7 +211,7 @@ btn_save={"id":"btn-save","kind":"button","text":"Save Cohort","appearance":"fil
     {"effect":"set-control-value","control":"CohortPick","value":{"type":"control","control":"CohortName"}}]}]}
 btn_reset={"id":"btn-reset","kind":"button","text":"Reset filters","appearance":"outline","actions":[{"id":"a-reset","trigger":"on-click","effects":[
     {"effect":"clear-control","scope":{"type":"page","pageId":"pg"},"usePublishedValue":True}]}]}
-saved_note={"id":"saved-note","kind":"text","body":"Every Save inserts a real row here (never lost, unlike the demeng original's UI-only Action Sequence).","verticalAlign":"middle","style":{"color":"#3A3A3A"}}
+saved_note={"id":"saved-note","kind":"text","body":"Every Save inserts a real row here (never lost, unlike the demeng original's UI-only Action Sequence).","verticalAlign":"center","style":{"color":"#3A3A3A"}}
 
 # ---- Agent: one tool per filter dimension, mirroring the demeng pattern exactly ----
 def filter_tool(tool_id,name,desc,control,input_desc,selection_mode=None):
@@ -193,14 +245,14 @@ agent={"id":"ag-cohort","name":"Cohort Builder Assistant",
  "dataSources":[{"kind":"table","elementId":"population"},{"kind":"table","elementId":"population-baseline"}],"tools":AGENT_TOOLS}
 chat={"id":"chat1","kind":"chat","agentId":"ag-cohort"}
 chat_c={"id":"c-chat","kind":"container","style":dict(TINT)}
-chat_hd={"id":"chat-hd","kind":"text","body":"**Ask the Cohort Builder Assistant**","verticalAlign":"middle","style":{"color":INK}}
+chat_hd={"id":"chat-hd","kind":"text","body":"**Ask the Cohort Builder Assistant**","verticalAlign":"center","style":{"color":INK}}
 
-header2={"id":"header2","kind":"text","body":"# Saved Cohorts","verticalAlign":"middle","style":{"color":INK}}
+header2={"id":"header2","kind":"text","body":"# Saved Cohorts","verticalAlign":"center","style":{"color":INK}}
 # tabbed container matching demeng's original Cohort Construction App: Tab A = build (table +
 # filters + agent), Tab B = visualize (KPIs + charts). Restored per Connor's "these two can be
 # tabbed containers" -- reverses the earlier 3-separate-pages split for just these two views;
 # "Saved Cohorts" (comparing many named cohorts) stays its own separate page, a different function.
-tc_cohort={"id":"tc-cohort","kind":"tabbed-container","tabs":[{"name":"Cohort Builder"},{"name":"Visualize"}],"tabBar":{"alignment":"start"}}
+tc_cohort={"id":"tc-cohort","kind":"tabbed-container","tabs":[{"name":"Cohort Builder"},{"name":"Visualize"}],"tabBar":{"alignment":"left"}}
 saved_table={"id":"saved-view","kind":"table","source":{"elementId":"saved-cohorts","kind":"table"},
  "columns":[{"id":"sv-name","formula":"[Saved Cohorts/Cohort Name]","name":"Cohort Name"},
    {"id":"sv-desc","formula":"[Saved Cohorts/Description]","name":"Description"},
@@ -227,13 +279,13 @@ ctrl_pick={"kind":"control","controlId":"CohortPick","id":"ctrl-pick","name":"Se
 # once a real Save happens in the published workbook, the picker auto-selects it AND (per Sigma's
 # normal published-control-state behavior) should stay selected for future visits -- the null
 # state below only shows up on a freshly-redeployed/never-saved workbook.
-pick_hint={"id":"pick-hint","kind":"text","body":"_Save a cohort on the Builder tab and it'll auto-select here — and stay selected next time you open this page._","verticalAlign":"middle","style":{"color":LABEL_GRAY}}
+pick_hint={"id":"pick-hint","kind":"text","body":"_Save a cohort on the Builder tab and it'll auto-select here — and stay selected next time you open this page._","verticalAlign":"center","style":{"color":LABEL_GRAY}}
 AGE_LABEL_VALS=",".join(f"('{ag}',{i})" for i,ag in enumerate(AGE_GROUPS))
-age_labels={"id":"age-labels","kind":"table","name":"Age Labels","visibleAsSource":True,
+age_labels={"id":"age-labels","kind":"table","name":"Age Labels",
  "source":{"connectionId":CONN,"kind":"sql","statement":f"SELECT column1 AS LABEL, column2 AS IDX FROM (VALUES {AGE_LABEL_VALS})"},
  "columns":[{"id":"al-label","formula":"[Custom SQL/LABEL]","name":"Label"},{"id":"al-idx","formula":"[Custom SQL/IDX]","name":"Idx"}],
  "order":["al-label","al-idx"]}
-cohort_age_cross={"id":"cohort-age-cross","kind":"table","name":"Selected Cohort — Age Breakdown","visibleAsSource":True,
+cohort_age_cross={"id":"cohort-age-cross","kind":"table","name":"Selected Cohort — Age Breakdown",
  "source":{"kind":"join","joins":[{"left":{"elementId":"saved-cohorts","kind":"table"},"right":{"elementId":"age-labels","kind":"table"},
    "columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"saved-cohorts","kind":"table"}},
  "columns":[{"id":"cac-cohort","formula":"[Saved Cohorts/Cohort Name]","name":"Cohort Name"},
@@ -368,18 +420,18 @@ def qa(s):
     return bad
 if qa(spec): print("ABORT malformed SVG"); sys.exit(1)
 # First run: POST creates a new workbook. On every re-run after that, hardcode the
-# returned workbookUrlId into EXISTING_WID below and switch to PUT .../{id}/spec — same
+# returned workbookUrlId into EXISTING_WID below and switch to PUT .../{id}/contents — same
 # discipline as every other generator in this repo: create once, then always edit in place
 # (re-POSTing creates a duplicate workbook with the same name).
 EXISTING_WID = None
 if EXISTING_WID:
-    r=urllib.request.Request(BASE+f"/v2/workbooks/{EXISTING_WID}/spec",data=json.dumps(spec).encode(),headers=H,method="PUT")
+    r=urllib.request.Request(BASE+f"/v2/workbooks/{EXISTING_WID}/contents",data=json.dumps({"contents":_wb_body(spec)["contents"]}).encode(),headers=H,method="PUT")
 else:
-    r=urllib.request.Request(BASE+"/v2/workbooks/spec",data=json.dumps(spec).encode(),headers=H,method="POST")
+    r=urllib.request.Request(BASE+"/v2/workbooks",data=json.dumps(_wb_body(spec)).encode(),headers=H,method="POST")
 try:
     resp=urllib.request.urlopen(r,timeout=120).read().decode()
-    print(("PUT" if EXISTING_WID else "POST")+":", "ACCEPTED" if "success: true" in resp else resp[:500])
-    wid=EXISTING_WID or [l.split()[-1] for l in resp.splitlines() if "workbookId" in l][0]
+    print(("PUT" if EXISTING_WID else "POST")+":", "ACCEPTED" if ("workbookId" in resp or EXISTING_WID) else resp[:500])
+    wid=EXISTING_WID or __import__("re").findall(r'"?workbookId"?:\s*"?([\w-]+)', resp)[0]
     url=json.loads(urllib.request.urlopen(urllib.request.Request(BASE+f"/v2/workbooks/{wid}",headers=H),timeout=30).read().decode()).get("url")
     print("URL:", url)
 except urllib.error.HTTPError as e:

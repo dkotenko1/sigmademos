@@ -1,3 +1,7 @@
+# LEGACY EXAMPLE (checked 2026-11-17): the POST now goes to /v2/workbooks with `contents`, but this
+# file still emits the pre-2026-08 layout XML dialect (<LayoutElement>/<GridContainer>) and the live API
+# rejects it ("unknown element ... expected Element, Container, or TabbedContainer"). Treat it as a
+# reference for element shapes only; for a working build use sigma-company-dashboard-v2/scripts/build_sofi.py.
 # CAVA — restaurant command-center + scenario-modeler generator (workbooks-as-code EXAMPLE).
 # Usage: python3 build_cava.py <SIGMA_BASE_URL> <TOKEN> <CONNECTION_ID> <FOLDER_ID>
 # Illustrative: reshapes SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS into a restaurant model.
@@ -6,6 +10,54 @@
 #   two agents (read-only + insert-rows tool); bespoke day-part plugin in a container BELOW the bar;
 #   agent beside the bar only; full-width toolbar buttons; side-by-side pivots below the plugin.
 import json,sys,os,base64,urllib.request,urllib.error,xml.dom.minidom as _MD
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE,TOKEN,CONN,FOLDER=sys.argv[1:5]
 AICONN="SNOWFLAKE.CORTEX.COMPLETE"
 # Register cava-daypart in YOUR org first (scripts/register_plugin.py) and export its id:
@@ -60,14 +112,14 @@ COLS=[("c-date","DATE","Date"),("c-month","USE_MONTH","Month"),("c-period","PERI
  ("c-menu","MENU","Menu category"),("c-chan","CHANNEL","Channel"),("c-mkt","MARKET","Market"),
  ("c-loc","LOCATION","Location"),("c-rev","REVENUE","Revenue"),("c-guests","GUESTS","Guests")]
 tbl={"id":"tbl","kind":"table","source":{"connectionId":CONN,"statement":SQL,"kind":"sql"},
- "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],"name":MF,"order":[c[0] for c in COLS],"visibleAsSource":True}
+ "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],"name":MF,"order":[c[0] for c in COLS]}
 # synthetic day-part source for the bespoke plugin (7 days x 24 hours, lunch+dinner peaks, weekend lift)
 DPSQL="""WITH g AS (SELECT SEQ4() s FROM TABLE(GENERATOR(ROWCOUNT=>168))), c AS (SELECT FLOOR(s/24) DOW, MOD(s,24) HR FROM g)
 SELECT GET(ARRAY_CONSTRUCT('Mon','Tue','Wed','Thu','Fri','Sat','Sun'),DOW)::string AS DAY, HR AS HOUR,
   CASE WHEN HR<10 OR HR>22 THEN 0 ELSE ROUND((CASE WHEN DOW IN (5,6) THEN 1.30 WHEN DOW=4 THEN 1.12 ELSE 1.0 END)
    *130000*(EXP(-POWER((HR-12.5)/1.6,2))+0.95*EXP(-POWER((HR-18.5)/1.9,2))+0.08)) END AS REVENUE
 FROM c"""
-daypart={"id":"daypart","kind":"table","name":"Day-part","visibleAsSource":True,
+daypart={"id":"daypart","kind":"table","name":"Day-part",
  "source":{"connectionId":CONN,"kind":"sql","statement":DPSQL},
  "columns":[{"id":"dp-day","formula":"[Custom SQL/DAY]","name":"Day"},{"id":"dp-hour","formula":"[Custom SQL/HOUR]","name":"Hour"},{"id":"dp-rev","formula":"[Custom SQL/REVENUE]","name":"Revenue","format":CUR}],
  "order":["dp-day","dp-hour","dp-rev"]}
@@ -75,8 +127,8 @@ daypart={"id":"daypart","kind":"table","name":"Day-part","visibleAsSource":True,
 def header(sfx,title,subtitle):
     c={"id":f"c-hdr{sfx}","kind":"container","style":{"borderRadius":"round","borderColor":"#ECE0D6","borderWidth":1},"backgroundImage":{"source":{"kind":"url","url":HEROBG},"style":{"fit":"cover"}}}
     lg={"id":f"logo{sfx}","kind":"image","source":{"kind":"url","url":logo_uri},"style":{"fit":"contain"}}
-    tt={"id":f"ttl{sfx}","kind":"text","body":f"## {title}","verticalAlign":"middle","style":{"color":INK}}
-    sb={"id":f"sub{sfx}","kind":"text","body":subtitle,"verticalAlign":"middle","style":{"color":SLATE}}
+    tt={"id":f"ttl{sfx}","kind":"text","body":f"## {title}","verticalAlign":"center","style":{"color":INK}}
+    sb={"id":f"sub{sfx}","kind":"text","body":subtitle,"verticalAlign":"center","style":{"color":SLATE}}
     lay=(f'  <GridContainer elementId="c-hdr{sfx}" type="grid" gridColumn="1 / 25" gridRow="1 / 5" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="repeat(6,1fr)">\n'
          f'    <LayoutElement elementId="logo{sfx}" gridColumn="1 / 6" gridRow="2 / 5"/>\n'
          f'    <LayoutElement elementId="ttl{sfx}" gridColumn="7 / 19" gridRow="2 / 4"/>\n'
@@ -90,7 +142,7 @@ def kpi(elid,src,icon,title,valf,fmt,compf,g,trend=None,rowband="5 / 13"):
     cols=[{"id":f"k-{elid}v","formula":valf,"name":title,"format":fmt}]
     kv={"id":f"k-{elid}","kind":"kpi-chart","source":{"elementId":src,"kind":"table"},
         "value":{"columnId":f"k-{elid}v","color":W,"fontSize":28},
-        "name":{"text":title,"fontSize":14,"color":W},"layout":{"anchor":"middle"},"style":{"backgroundColor":"transparent","padding":"none"}}
+        "name":{"text":title,"fontSize":14,"color":W},"layout":{"anchor":"center"},"style":{"backgroundColor":"transparent","padding":"none"}}
     if compf:
         cols.append({"id":f"k-{elid}c","formula":compf,"name":"Comparison","format":fmt})
         kv["comparisonColumn"]={"columnId":f"k-{elid}c"}; kv["comparison"]={"display":"delta","colorGood":"#DDF3C6","colorBad":"#FFD1C7","fontSize":14}
@@ -129,8 +181,8 @@ ai_body=('{{ Replace(CallText("'+AICONN+'", "CLAUDE-4-SONNET", '
  '& "M guest transactions. Note the top menu category and channel mix."), \'"\', \'\') }}')
 ai_box={"id":"c-ai","kind":"container","style":dict(TINT)}
 ai_ic={"id":"ai-ic","kind":"image","source":{"kind":"url","url":ic(IC_ZAP,CORAL,fill=CORAL)},"style":{"fit":"contain"}}
-ai_hd={"id":"ai-hd","kind":"text","body":"**AI insight**","verticalAlign":"middle","style":{"color":INK}}
-ai_sum={"id":"txt-ai","kind":"text","body":ai_body,"verticalAlign":"middle","style":{"color":"#4A342A"}}
+ai_hd={"id":"ai-hd","kind":"text","body":"**AI insight**","verticalAlign":"center","style":{"color":INK}}
+ai_sum={"id":"txt-ai","kind":"text","body":ai_body,"verticalAlign":"center","style":{"color":"#4A342A"}}
 grain={"kind":"control","controlId":"DateGrain","id":"ctrl-grain","name":"Date Grain","controlType":"segmented","value":"Month","source":{"kind":"manual","valueType":"text","values":["Quarter","Month","Week","Day"]}}
 colorby={"kind":"control","controlId":"ColorBy","id":"ctrl-colorby","name":"Color By","controlType":"segmented","value":"Menu category","source":{"kind":"manual","valueType":"text","values":["Menu category","Channel","Market"]}}
 ctrl_menu={"kind":"control","controlId":"MenuF","id":"ctrl-menuf","name":"Menu category","controlType":"list","selectionMode":"multiple","mode":"include","values":[],"filters":[{"source":{"kind":"table","elementId":"tbl"},"columnId":"c-menu"}],"source":{"kind":"source","source":{"kind":"table","elementId":"tbl"},"columnId":"c-menu"}}
@@ -144,11 +196,11 @@ sbar={"id":"sbar","kind":"bar-chart","source":{"elementId":"tbl","kind":"table"}
  "dataLabel":{"labels":"hidden"},"legend":{"visibility":"visible"},"name":{"text":"Revenue by period & menu category","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 # bespoke plugin: day-part revenue heatmap, bound to the synthetic day-part source
 plug_c={"id":"c-plug","kind":"container","style":dict(CARD)}
-plug_hd={"id":"plug-hd","kind":"text","body":"**Day-part revenue — by hour & weekday**","verticalAlign":"middle","style":{"color":INK}}
+plug_hd={"id":"plug-hd","kind":"text","body":"**Day-part revenue — by hour & weekday**","verticalAlign":"center","style":{"color":INK}}
 plug_el={"id":"daypartviz","kind":"plugin","pluginId":DAYPART_PLUGIN,"config":{"source":{"kind":"element","elementId":"daypart"},"day":"dp-day","hour":"dp-hour","value":"dp-rev"}}
 heat={"id":"heat","kind":"pivot-table","source":{"elementId":"tbl","kind":"table"},
  "columns":[{"id":"hm","formula":f"[{MF}/Menu category]","name":"Menu"},{"id":"hp","formula":f"[{MF}/Market]","name":"Market"},{"id":"hv","formula":f"Sum([{MF}/Revenue])","name":"Revenue","format":CUR}],
- "rowsBy":[{"id":"hm"}],"columnsBy":[{"id":"hp"}],"values":["hv"],
+ "rowsBy":[{"columnId":"hm"}],"columnsBy":[{"columnId":"hp"}],"values":["hv"],
  "conditionalFormats":[{"type":"single","columnIds":["hv"],"condition":"IsNotNull","style":{"backgroundColor":"#FBEBE2"}}],
  "name":{"text":"Revenue — Menu x Market","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 book={"id":"book","kind":"pivot-table","source":{"elementId":"tbl","kind":"table"},
@@ -156,7 +208,7 @@ book={"id":"book","kind":"pivot-table","source":{"elementId":"tbl","kind":"table
             {"id":"bk-rev","formula":f"Sum([{MF}/Revenue])","name":"Revenue","format":CUR},
             {"id":"bk-g","formula":f"Sum([{MF}/Guests])","name":"Guests","format":NUM},
             {"id":"bk-avg","formula":f"Sum([{MF}/Revenue])/Sum([{MF}/Guests])","name":"Avg check","format":{"kind":"number","formatString":"$,.2f"}}],
- "rowsBy":[{"id":"bk-menu"}],"values":["bk-rev","bk-g","bk-avg"],
+ "rowsBy":[{"columnId":"bk-menu"}],"values":["bk-rev","bk-g","bk-avg"],
  "conditionalFormats":[{"type":"single","columnIds":["bk-rev"],"condition":"IsNotNull","style":{"backgroundColor":"#FBEBE2"}}],
  "name":{"text":"Menu mix","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 
@@ -177,9 +229,9 @@ def ag_scenario(with_tool):
 def rail(n,with_agent,rows,agent_id):
     c={"id":f"c-chat{n}","kind":"container","style":dict(CARD)}
     ric={"id":f"chat-ic{n}","kind":"image","source":{"kind":"url","url":ic(IC_CHAT,CORAL)},"style":{"fit":"contain"}}
-    hdr={"id":f"chat-hdr{n}","kind":"text","body":"**Ask CAVA AI**","verticalAlign":"middle","style":{"color":INK}}
+    hdr={"id":f"chat-hdr{n}","kind":"text","body":"**Ask CAVA AI**","verticalAlign":"center","style":{"color":INK}}
     if with_agent: inner={"id":f"chat{n}","kind":"chat","agentId":agent_id}
-    else: inner={"id":f"chat{n}","kind":"text","verticalAlign":"middle","style":{"color":"#4A342A","backgroundColor":"#FBF1E9"},"body":"**Ask AI for Insights**\n\n- Which menu categories drive the most revenue per guest?\n- When are our day-part peaks?\n- What price + traffic mix hits a revenue target?\n\n_Agent slot — finish in the UI (Add element → Agent → point at the CAVA / Book tables)._"}
+    else: inner={"id":f"chat{n}","kind":"text","verticalAlign":"center","style":{"color":"#4A342A","backgroundColor":"#FBF1E9"},"body":"**Ask AI for Insights**\n\n- Which menu categories drive the most revenue per guest?\n- When are our day-part peaks?\n- What price + traffic mix hits a revenue target?\n\n_Agent slot — finish in the UI (Add element → Agent → point at the CAVA / Book tables)._"}
     lay=(f'  <GridContainer elementId="c-chat{n}" type="grid" gridColumn="18 / 25" gridRow="{rows}" gridTemplateColumns="repeat(12, 1fr)" gridTemplateRows="auto">\n'
          f'    <LayoutElement elementId="chat-ic{n}" gridColumn="1 / 3" gridRow="1 / 2"/>\n'
          f'    <LayoutElement elementId="chat-hdr{n}" gridColumn="3 / 13" gridRow="1 / 2"/>\n'
@@ -210,21 +262,21 @@ ROWS=[('Grain Bowls','Signature',360000000,0.72),('Pitas','Signature',135000000,
  ('Sides','Add-ons',117000000,0.68),('Beverages','Add-ons',90000000,0.82)]
 VALS=",".join(f"('{p}','{c}',{rev},{m})" for p,c,rev,m in ROWS)
 SBASE=f"SELECT column1 AS MENU, column2 AS GRP, column3 AS BASE_REV, column4 AS BASE_MARGIN FROM (VALUES {VALS})"
-sbase={"id":"sbase","kind":"table","name":"Menu Base","visibleAsSource":True,
+sbase={"id":"sbase","kind":"table","name":"Menu Base",
  "source":{"connectionId":CONN,"kind":"sql","statement":SBASE},
  "columns":[{"id":"sb-menu2","formula":"[Custom SQL/MENU]","name":"Menu category"},{"id":"sb-grp","formula":"[Custom SQL/GRP]","name":"Group"},
             {"id":"sb-rev2","formula":"[Custom SQL/BASE_REV]","name":"Revenue","format":CUR},{"id":"sb-mar","formula":"[Custom SQL/BASE_MARGIN]","name":"Margin","format":PCT1}],
  "order":["sb-menu2","sb-grp","sb-rev2","sb-mar"]}
 scenarios={"id":"scenarios","kind":"input-table","source":{"kind":"empty","connectionId":CONN},"inputMode":"edit","name":"Scenarios",
  "columns":[{"id":"sc-name","type":"text","name":"Scenario Name"},{"id":"sc-status","type":"text","name":"Status","values":["Draft","Submitted","Approved"],"pills":"color-by-option"}]}
-spivot={"id":"spivot","kind":"pivot-table","name":"Scenario Pivot","visibleAsSource":True,
+spivot={"id":"spivot","kind":"pivot-table","name":"Scenario Pivot",
  "source":{"kind":"join","joins":[{"left":{"elementId":"sbase","kind":"table"},"right":{"elementId":"scenarios","kind":"table"},"columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"sbase","kind":"table"}},
  "columns":[{"id":"pv-menu","formula":"[Menu Base/Menu category]","name":"Menu category"},
             {"id":"pv-grp","formula":"[Menu Base/Group]","name":"Group"},
             {"id":"pv-scen","formula":'Coalesce([Scenarios/Scenario Name],"Base Case")',"name":"Scenario"},
             {"id":"pv-rev","formula":"Sum([Menu Base/Revenue])","name":"Revenue","format":CUR},
             {"id":"pv-mar","formula":"Avg([Menu Base/Margin])","name":"Margin","format":PCT1}],
- "rowsBy":[{"id":"pv-menu"},{"id":"pv-grp"}],"values":["pv-rev","pv-mar"]}
+ "rowsBy":[{"columnId":"pv-menu"},{"columnId":"pv-grp"}],"values":["pv-rev","pv-mar"]}
 assum={"id":"assum","kind":"input-table","source":{"kind":"linked","from":"spivot"},"inputMode":"edit","name":"Assumptions",
  "columns":[{"id":"ia-menu","key":"pv-menu"},{"id":"ia-grp","key":"pv-grp"},{"id":"ia-scen","key":"pv-scen"},{"id":"ia-rev","key":"pv-rev"},{"id":"ia-mar","key":"pv-mar"},
             {"id":"ia-price","type":"number","name":"Price Change %"},
@@ -233,7 +285,7 @@ assum={"id":"assum","kind":"input-table","source":{"kind":"linked","from":"spivo
             {"id":"ia-prev","formula":"[Revenue]*(1+Coalesce([Price Change %],0)/100)*(1+Coalesce([Traffic Growth %],0)/100)*(1+Coalesce([Attachment %],0)/100)","name":"Projected Revenue","format":CUR},
             {"id":"ia-pgp","formula":"[Projected Revenue]*[Margin]","name":"Projected Gross Profit","format":CUR}],
  "order":["ia-scen","ia-menu","ia-grp","ia-rev","ia-price","ia-traf","ia-att","ia-prev","ia-pgp"]}
-book2={"id":"book2","kind":"table","name":"Book","visibleAsSource":True,
+book2={"id":"book2","kind":"table","name":"Book",
  "source":{"elementId":"assum","kind":"table"},
  "columns":[{"id":"bb-scen","formula":"[Assumptions/Scenario]","name":"Scenario"},
             {"id":"bb-menu","formula":"[Assumptions/Menu category]","name":"Menu category"},
@@ -257,7 +309,7 @@ createbtn={"id":"createbtn","kind":"button","text":"Create scenario","appearance
     {"effect":"clear-control","scope":{"type":"control","controlId":"newScenarioName"}},
     {"effect":"close-overlay"}]}]}
 cancelbtn={"id":"cancelbtn","kind":"button","text":"Cancel","appearance":"outline","actions":[{"id":"x1","trigger":"on-click","effects":[{"effect":"close-overlay"}]}]}
-mtitle={"id":"mtitle","kind":"text","body":"### New scenario\nName it, then Create. It clones the current book for every menu category — edit the assumptions in the grid.","verticalAlign":"middle","style":{"color":INK}}
+mtitle={"id":"mtitle","kind":"text","body":"### New scenario\nName it, then Create. It clones the current book for every menu category — edit the assumptions in the grid.","verticalAlign":"center","style":{"color":INK}}
 modal={"id":"createModal","name":"Create Scenario","type":"modal","modal":{"width":"small","header":{"title":"New scenario","showCloseIcon":"hidden"},"footer":{"primaryCta":{"visible":"hidden"},"secondaryCta":{"visible":"hidden"}}},"elements":[mtitle,namectrl,createbtn,cancelbtn]}
 BREV='Sum([Book/Base Revenue])'; BGP='Sum([Book/Base GP])'; PREV='Sum([Book/Projected Revenue])'; PGP='Sum([Book/Projected GP])'
 P2K=[("p1",ic(IC_DOLLAR,W),"PROJECTED REVENUE",PREV,CUR,BREV),
@@ -277,9 +329,9 @@ cbar={"id":"cbar","kind":"bar-chart","source":{"elementId":"book2","kind":"table
  "legend":{"visibility":"hidden"},"name":{"text":"Projected revenue by menu category — active scenario","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 instr_c={"id":"c-instr","kind":"container","style":dict(TINT)}
 instr_ic={"id":"instr-ic","kind":"image","source":{"kind":"url","url":ic(IC_LIST,CORAL)},"style":{"fit":"contain"}}
-instr_hd={"id":"instr-hd","kind":"text","body":"**How the scenario modeler works**","verticalAlign":"middle","style":{"color":INK}}
+instr_hd={"id":"instr-hd","kind":"text","body":"**How the scenario modeler works**","verticalAlign":"center","style":{"color":INK}}
 instr={"id":"instr","kind":"text","body":("**1** — **Create** a named scenario (clones the current book); pick it with **Active scenario**.  **2** — In the grid, type **Price Change %**, **Traffic Growth %**, **Attachment %** per menu category.  **3** — Cards, chart & Copilot re-project instantly. **Submit → Approve** to lock a plan. Leave a cell blank to hold a driver flat."),
- "verticalAlign":"middle","style":{"color":"#4A342A"}}
+ "verticalAlign":"center","style":{"color":"#4A342A"}}
 tb_c={"id":"c-tb","kind":"container","style":dict(CARD)}
 h2e,h2l=header("2","Menu & Pricing Scenario Modeler","Model price, traffic & attachment by menu category")
 def page2(with_agent):
@@ -327,11 +379,11 @@ def qa(s):
             except Exception as e: bad+=1; print("INVALID SVG:",str(e)[:120])
     return bad
 def post(s):
-    r=urllib.request.Request(BASE+"/v2/workbooks/spec",data=json.dumps(s).encode(),headers=H,method="POST")
+    r=urllib.request.Request(BASE+"/v2/workbooks",data=json.dumps(_wb_body(s)).encode(),headers=H,method="POST")
     resp=urllib.request.urlopen(r,timeout=120).read().decode()
-    wid=[l.split()[-1] for l in resp.splitlines() if "workbookId" in l]
+    wid=__import__("re").findall(r'"?workbookId"?:\s*"?([\w-]+)', resp)
     url=json.loads(urllib.request.urlopen(urllib.request.Request(BASE+f"/v2/workbooks/{wid[0]}",headers=H),timeout=30).read().decode()).get("url") if wid else None
-    return ("success: true" in resp), url, resp
+    return ("workbookId" in resp), url, resp
 done=False
 for mode in ["tool","basic","none"]:
     spec=build(mode)

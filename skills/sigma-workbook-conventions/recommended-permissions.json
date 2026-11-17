@@ -21,7 +21,7 @@
     "",
     "Approval model:",
     "  - Plan-approval authorizes every state-changing API call EXCEPT DELETE.",
-    "  - POST/PUT to /v2/workbooks/spec and /v2/dataModels/*/spec run silent.",
+    "  - POST to /v2/workbooks, PUT to /v2/workbooks/{id}/contents and /v2/dataModels/*/spec run silent.",
     "  - DELETE on ANY endpoint always prompts, regardless of plan content.",
     "  - Future deletion scripts must be named `scripts/api/delete-*` so they",
     "    are caught by the ask pattern; the broad Bash(scripts/api/*) allow",

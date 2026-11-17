@@ -60,7 +60,7 @@ def one(col, order):
     return 'MaxIf([%s/%s], [%s/Alert Order] = %d)' % (NT, col, NT, order)
 
 
-add({"id": "tbl-notif", "kind": "table", "name": NT, "visibleAsSource": True,
+add({"id": "tbl-notif", "kind": "table", "name": NT, 
      "source": {"connectionId": S.CONN_SNOWFLAKE, "kind": "sql",
                 "statement": (SQL / "notifications.sql").read_text()},
      "columns": [{"id": "n%d" % i, "formula": "[Custom SQL/%s]" % c, "name": c}

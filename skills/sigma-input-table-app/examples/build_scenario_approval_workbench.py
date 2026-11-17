@@ -38,6 +38,54 @@ import sys
 import urllib.error
 import urllib.request
 
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE_SQL = """
 SELECT * FROM VALUES
   ('Hardware', 'West',    18400),
@@ -61,7 +109,6 @@ def build_spec(connection_id, folder_id):
 
     base = {
         "id": "sbase", "kind": "table", "name": "Demand Base",
-        "visibleAsSource": True,
         "source": {"connectionId": connection_id, "kind": "sql", "statement": BASE_SQL},
         "columns": [
             {"id": "sb-prod", "formula": "[Custom SQL/PRODUCT]", "name": "Product"},
@@ -123,7 +170,7 @@ def build_spec(connection_id, folder_id):
     }
 
     book = {
-        "id": "book", "kind": "table", "name": "Book", "visibleAsSource": True,
+        "id": "book", "kind": "table", "name": "Book",
         "source": {"elementId": "assum", "kind": "table"},
         "columns": [
             {"id": "bk-prod", "formula": "[Assumptions/Product]", "name": "Product"},
@@ -438,10 +485,10 @@ if __name__ == "__main__":
                           "<SIGMA_BASE_URL> <TOKEN> <CONNECTION_ID> <FOLDER_ID>")
     base_url, token, connection_id, folder_id = sys.argv[1:5]
     spec = build_spec(connection_id, folder_id)
-    status, result = call(base_url, token, "POST", "/v2/workbooks/spec/verify", spec)
+    status, result = call(base_url, token, "POST", "/v2/workbooks", _wb_body(spec, dry_run=True))
     print("verify", status, json.dumps(result, indent=2) if not isinstance(result, str) else result)
     if status >= 400 or not result.get("valid"):
         raise SystemExit(1)
-    status, result = call(base_url, token, "POST", "/v2/workbooks/spec", spec)
+    status, result = call(base_url, token, "POST", "/v2/workbooks", _wb_body(spec))
     print("create", status, json.dumps(result, indent=2) if not isinstance(result, str) else result)
     raise SystemExit(0 if status < 400 else 1)

@@ -352,7 +352,7 @@ add({"id": "mc-close", "kind": "button", "text": "Close", "appearance": "outline
 
 add({"id": "tc-persona", "kind": "tabbed-container",
      "tabs": [{"name": "Category Performance"}, {"name": "Product Detail"}],
-     "tabBar": {"alignment": "start"}})
+     "tabBar": {"alignment": "left"}})
 
 # ticker slot: native marker strip (no bespoke plugin -- see the plugin
 # postmortem in build_clickhouse_bigbuys.py / memory)
@@ -579,7 +579,7 @@ add({"id": "plg-wheel", "kind": "pivot-table", "name": "Revenue by product famil
          {"id": "pw-prod", "formula": "[%s/Product Family]" % LB, "name": "Product Family"},
          {"id": "pw-q", "formula": 'DateTrunc("quarter", [%s/Date])' % LB, "name": "Quarter"},
          {"id": "pw-rev", "formula": "Sum([%s/Revenue])" % LB, "name": "Revenue", "format": MONEY_M}],
-     "rowsBy": [{"id": "pw-prod"}], "columnsBy": [{"id": "pw-q"}], "values": ["pw-rev"], "style": panel()})
+     "rowsBy": [{"columnId": "pw-prod"}], "columnsBy": [{"columnId": "pw-q"}], "values": ["pw-rev"], "style": panel()})
 add({"id": "ico-wheel", "kind": "image", "source": {"kind": "url", "url": B.icon(B.ICON_WHEEL)},
      "style": {"fit": "contain", "padding": "none"}})
 add({"id": "wheel-heading", "kind": "text",
