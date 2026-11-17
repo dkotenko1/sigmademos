@@ -2,7 +2,7 @@
 name: sigma-cohort-builder-app
 description: >-
   BUILDING BLOCK for interactive Sigma "cohort builder" data apps from code
-  (workbooks-as-code, POST/PUT /v2/workbooks/spec) — an agent-driven population
+  (workbooks-as-code, `POST /v2/workbooks` / `PUT /v2/workbooks/{id}/contents`) — an agent-driven population
   SEGMENTATION tool: filter a population of individual records (customers, patients,
   employees, students, members, accounts) down to a named, saveable cohort, see live
   size/rate KPIs and distributions, then compare saved cohorts against each other. For
@@ -20,7 +20,7 @@ description: >-
 # Sigma Cohort Builder — population segmentation app
 
 Given "let a user (or an agent) filter a population down to a named cohort, save it,
-and compare saved cohorts," build this via `POST/PUT /v2/workbooks/spec`. Reverse-
+and compare saved cohorts," build this via `POST /v2/workbooks` / `PUT /v2/workbooks/{id}/contents`. Reverse-
 engineered from a real production workbook (demeng org's Marketing Control Center,
 "Cohort Construction App" page) and verified end-to-end on staging. Pair with
 `sigma-company-dashboard` for the read-only dashboard half, and see

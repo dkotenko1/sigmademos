@@ -25,7 +25,7 @@ curl -s "https://assets.sigmacomputing.com/openapi/public-rest-api/sigma-computi
 # a dead URL returns an HTML error page, which would make every jq below fail
 # silently and leave you guessing again
 jq -e . /tmp/sigma-api.json >/dev/null 2>&1 \
-  || echo "⚠️ not JSON — fall back to GET /v2/workbooks/{id}/spec on a real workbook"
+  || echo "⚠️ not JSON — fall back to GET /v2/workbooks/{id}?includeContents=true on a real workbook"
 ```
 
 ## The queries that actually answer questions
@@ -71,7 +71,7 @@ spec cannot express. Specifically, the OpenAPI will never tell you:
 
 - which fields are accepted on write and then **silently dropped** on read-back
   (diff your POST body against the GET-back — a vanished key is a finding)
-- that `POST /spec/verify` is **weaker than create** — it skips SQL resolution,
+- that `POST /v2/workbooks` with `dryRun` is **weaker than create** — it skips SQL resolution,
   duplicate-id and dangling-reference checks, and workspace feature flags
 - that an unrecognised layout XML tag returns a **masked 500**, not a validation error
 - that `Invalid kind: "x"` almost always means *a required field is missing*, not

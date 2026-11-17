@@ -1,15 +1,15 @@
 > **API update 2026-11-17 (Sigma agent-skills v1.0.0 alignment).** Workbooks and reports are now created with
 > `POST /v2/workbooks` / `POST /v2/reports` (body `{name, folderId, contents}`), validated with `"dryRun": true`,
 > read with `GET …?includeContents=true`, and updated with `PUT …/{id}/contents` (`{contents, documentVersion?}`).
-> The `/spec` paths named below are the legacy endpoints; `scripts/sigmaapi.py` (and the `_wb_body` helper in each
-> example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
+> Endpoints below use the contents API. Older gotchas in this file may still say `/spec` (the legacy path);
+> `scripts/sigmaapi.py` (and the `_wb_body` helper in each example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
 > modal/drawer pages are `contents.overlays[]`; `themeOverrides` is `settings.theme.overrides`.
 
 # Sigma workbooks-as-code — verified API cheatsheet
 
 Hard-won from real builds. **Trust GET-back specs of recent, UI-built workbooks
 over any older doc/exemplar — the spec schema has drifted.** POST to
-`/v2/workbooks/spec`; `folderId` is REQUIRED at CREATE.
+`/v2/workbooks` with the spec under `contents`; `folderId` is REQUIRED at CREATE.
 
 ## The masked "Invalid kind" error
 `{"message":"pages[0].elements[N]: Invalid kind: \"<kind>\""}` almost never means
@@ -74,14 +74,14 @@ site then deploy with an explicit `--site`.
 
 ## More gotchas (verified 2026-07-24, demeng, scatter-lasso plugin build)
 - **Cloudflare WAF blocks any JSON key CONTAINING the substring "field"** (case-sensitive,
-  e.g. `filterField`) on `POST/PUT .../spec` — returns an HTML "Attention Required! |
+  e.g. `filterField`) on `POST/PUT .../contents` — returns an HTML "Attention Required! |
   Cloudflare" block page, NOT a Sigma API error, so it looks like a hang/wrong-endpoint
   rather than a 400. Confirmed by bisection: `filterField`/`passField`/bare `field` all
   blocked; renaming to `filterColumn` fixed it instantly. If a spec POST/PUT returns an
   HTML Cloudflare page instead of JSON/YAML, suspect a flagged key name first — bisect
   key names, not just value shapes. (A plain Python `urllib` User-Agent was NOT the
   cause, ruled out first.)
-- **POST/PUT `/v2/workbooks/spec` responses are YAML, not JSON** (`success: true` /
+- **`POST /v2/workbooks` / `PUT /v2/workbooks/{id}/contents` responses may be YAML or JSON** (older `/spec` responses were YAML: `success: true` /
   `workbookId: ...`) — a `json.loads()`-only parser throws `JSONDecodeError` on a
   successful call, which looks exactly like a crash. Always fall back to printing the
   raw text (or `yaml.safe_load`) instead of assuming JSON — otherwise you'll think a

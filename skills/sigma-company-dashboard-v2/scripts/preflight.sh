@@ -26,4 +26,7 @@ else
   echo "MISSING: sigma CLI at $CLI (see sigma-skills:sigma-cli)"
 fi
 echo
+echo "== next =="
+echo "  python3 scripts/doctor.py <company>   # ids, hosted plugins, assets (prints the fix for each failure)"
+echo
 [ "$ok" = 1 ] && echo "preflight ok" || echo "preflight: fix the items above before building"

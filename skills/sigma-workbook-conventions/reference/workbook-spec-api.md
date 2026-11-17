@@ -1,13 +1,13 @@
 > **API update 2026-11-17 (Sigma agent-skills v1.0.0 alignment).** Workbooks and reports are now created with
 > `POST /v2/workbooks` / `POST /v2/reports` (body `{name, folderId, contents}`), validated with `"dryRun": true`,
 > read with `GET …?includeContents=true`, and updated with `PUT …/{id}/contents` (`{contents, documentVersion?}`).
-> The `/spec` paths named below are the legacy endpoints; `scripts/sigmaapi.py` (and the `_wb_body` helper in each
-> example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
+> Endpoints below use the contents API. Older gotchas in this file may still say `/spec` (the legacy path);
+> `scripts/sigmaapi.py` (and the `_wb_body` helper in each example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
 > modal/drawer pages are `contents.overlays[]`; `themeOverrides` is `settings.theme.overrides`.
 
 # Workbook Spec API — Reference
 
-Canonical patterns for `POST/GET/PUT /v2/workbooks/spec`. These rules are the
+Canonical patterns for `POST/GET/PUT /v2/workbooks (+ /{id}/contents)`. These rules are the
 result of iteration loops where the create endpoint accepted broken specs that
 failed at render time. Read this before authoring any workbook spec.
 
@@ -87,10 +87,10 @@ iterations searching for a field that doesn't exist.
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `POST` | `/v2/workbooks/spec` | Create. Body is JSON or YAML. Required: `name`, `schemaVersion: 1`, `folderId`, `pages`. Optional: `layout`. POST defaults to YAML response — pass `Accept: application/json` for JSON. |
-| `GET`  | `/v2/workbooks/{workbookId}/spec` | **Defaults to YAML.** Pass `Accept: application/json` for JSON. |
-| `PUT`  | `/v2/workbooks/{workbookId}/spec` | Full-spec update; no partials. |
-| `DELETE` | _unknown against staging_ | Against a different org (CTE Global, `api.ca.azure.sigmacomputing.com`, 2026-08-14), `DELETE /v2/files/{urlId}` returned `200 {}` and cleanly archived a workbook the same token had just created via `POST /v2/workbooks/spec`. If staging still 404s, it may be host/org-specific rather than universally broken — retry `/v2/files/{urlId}` (not `/v2/workbooks/{id}`) before concluding it's unavailable. |
+| `POST` | `/v2/workbooks` | Create. Body `{name, folderId, description?, contents}`; `contents` = `{schemaVersion: 1, kind: "workbook", elements: [...flat], pages: [...metadata only], layout, overlays?, settings?, agents?}`. **Omitting `contents` silently creates a blank workbook.** Add `"dryRun": true` to validate without persisting (`contents` required). JSON or YAML. |
+| `GET`  | `/v2/workbooks/{workbookId}?includeContents=true` | Returns the same shape plus `workbookId`, `documentVersion`, etc. Send `Accept: application/json` for JSON. |
+| `PUT`  | `/v2/workbooks/{workbookId}/contents` | Full-contents update; no partials. Body is exactly `{contents, documentVersion?}` (name/folderId are ignored; rename/move with `PUT /v2/files/{id}`). `documentVersion` gives an optimistic-concurrency check. |
+| `DELETE` | _unknown against staging_ | Against a different org (CTE Global, `api.ca.azure.sigmacomputing.com`, 2026-08-14), `DELETE /v2/files/{urlId}` returned `200 {}` and cleanly archived a workbook the same token had just created via `POST /v2/workbooks`. If staging still 404s, it may be host/org-specific rather than universally broken — retry `/v2/files/{urlId}` (not `/v2/workbooks/{id}`) before concluding it's unavailable. |
 
 `folderId` is the **internal UUID** (e.g. `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`),
 NOT the urlId (a short base62 string like `AbC123...`). Look up via
@@ -107,7 +107,7 @@ it burned a huge amount of time investigating Databricks writeback grants,
 connection health, malformed columns, and `inputMode` before the actual cause
 surfaced.
 
-**Root cause:** every `PUT /v2/workbooks/{id}/spec` bumps the server-side
+**Root cause:** every `PUT /v2/workbooks/{id}/contents` bumps the server-side
 `documentVersion`. If the user has the workbook open in their browser
 (Draft/builder mode) *at the same time* you PUT a change via the API, their
 already-open tab keeps editing against the stale version it loaded with. The
@@ -622,7 +622,7 @@ won't be useful. The skill's job is to refuse to ship one.
 **Field-name TODO** — the exact JSON spec fields for KPI title visibility,
 comparison period, and sparkline are not documented in Sigma's public help
 docs (UI-level docs only). Discover them by configuring a KPI in the UI,
-then `GET /v2/workbooks/{id}/spec` and diff against the previous spec.
+then `GET /v2/workbooks/{id}?includeContents=true` and diff against the previous spec.
 Update this section with the field names once known.
 
 ## The column-declaration rule (MOST IMPORTANT)
@@ -861,7 +861,7 @@ pages[0].elements[N].columns[M].format: Missing "kind" field
 ```
 
 The required `kind` value is not in the public docs. Until the shape is
-discovered (configure currency in the UI → `GET /v2/workbooks/{id}/spec`
+discovered (configure currency in the UI → `GET /v2/workbooks/{id}?includeContents=true`
 → diff), **omit `format` from POST bodies entirely** and configure
 currency/percent formatting in the UI after CREATE. Replace this section
 with the discovered shape once known.

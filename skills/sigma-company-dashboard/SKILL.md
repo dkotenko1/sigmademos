@@ -3,7 +3,7 @@ name: sigma-company-dashboard
 description: >-
   START HERE — the FLAGSHIP end-to-end builder for a branded Sigma workbook /
   dashboard / POV / demo for a NAMED company or prospect, via the workbooks-as-code
-  API (POST /v2/workbooks/spec). ONE skill does the whole thing: reshape sample data
+  API (POST /v2/workbooks). ONE skill does the whole thing: reshape sample data
   with custom SQL into the company's domain, fetch their REAL logo, a brand-gradient
   header, COMPARATIVE gradient KPI cards, a LIVE CallText AI insight, charts + filters,
   a bespoke domain-specific plugin (hosted on localhost + registered), and a second
@@ -42,7 +42,7 @@ entirely from code. Proven across multiple retail, CPG, and tech companies.
 > interactive app to a pixel-perfect **report** — reports are now code-representable
 > too, same envelope with `kind: "report"`.
 >
-> Also: **`POST /spec/verify` is weaker than `create`** — it skips SQL resolution and
+> Also: **`POST /v2/workbooks` with `dryRun` is weaker than `create`** — it skips SQL resolution and
 > duplicate/dangling-id checks. Always create or update to truly validate.
 >
 > And **every input table you build gets `inputMode: "view"`**. `inputMode` IS the

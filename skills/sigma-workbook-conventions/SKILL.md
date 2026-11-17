@@ -45,7 +45,7 @@ generating or editing any `spec.json` in `workbooks/` or `examples/`.
 > triggers, `successToast`, agents with MCP/warehouse-agent/search-service tools,
 > and **reports as code**.
 >
-> And the habit that saves the most time: **`POST /spec/verify` does not resolve
+> And the habit that saves the most time: **`POST /v2/workbooks` with `dryRun` does not resolve
 > SQL or catch duplicate/dangling ids.** Only `create`/`update` fully validate.
 
 ## Inputs
@@ -228,7 +228,7 @@ don't re-propose.
 ### Approval model — plan is the only gate
 
 Plan approval authorizes **every state-changing API call covered by the
-plan, except DELETE**. POST/PUT to `/v2/workbooks/spec` and
+plan, except DELETE**. POST/PUT to `/v2/workbooks` and
 `/v2/dataModels/*/spec` run silently — `.claude/settings.json` allowlists
 both `Bash(scripts/api/*)` (which covers `publish-workbook.sh`) and the
 direct curl patterns. The user reviews one plan, approves, and the

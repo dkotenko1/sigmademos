@@ -12,7 +12,7 @@ reject on write).
 1. **Resolve the workbook.** `GET /v2/workbooks/{urlId}` accepts the
    `workbookUrlId` straight out of the app URL (`.../workbook/<Name>-<urlId>`)
    and returns the real `workbookId` — no search needed.
-2. **Pull the spec.** `GET /v2/workbooks/{workbookId}/spec` returns the full
+2. **Pull the spec.** `GET /v2/workbooks/{id}?includeContents=true` returns the full
    YAML. Production apps run into the thousands of lines (multi-page,
    multi-modal, plan/lifecycle machinery) — read it in chunks, don't try to
    hold the whole thing in context at once.
@@ -44,7 +44,7 @@ reject on write).
   was when it first loaded.** Hit this directly: after three separate PUTs
   fixing bugs across a session (verified via export each time — real numbers
   everywhere), the user made one small UI change (an `inputMode` dropdown)
-  and the workbook's `documentVersion` bumped, but a fresh `GET /spec`
+  and the workbook's `documentVersion` bumped, but a fresh `GET ...?includeContents=true`
   showed the *original, most-broken* content — bare unqualified column refs,
   the pre-rename element id, everything. The editor's save action appears to
   write back its own full in-memory document, not a diff against the
@@ -53,7 +53,7 @@ reject on write).
   PUT, tell whoever has the workbook open to hard-refresh the tab before
   making ANY UI edit, even a trivial one** — or don't let anyone touch the UI
   at all until you're done iterating via the API. If a "verified" fix
-  mysteriously regresses with no PUT of your own in between, `GET /spec`
+  mysteriously regresses with no PUT of your own in between, `GET ...?includeContents=true`
   first and diff against what you last pushed before assuming you introduced
   a new bug — you may be looking at exactly this.
 - **A bare `[col]` formula does NOT reach the raw SQL output on a custom-SQL

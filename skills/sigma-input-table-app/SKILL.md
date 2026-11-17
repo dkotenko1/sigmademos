@@ -2,7 +2,7 @@
 name: sigma-input-table-app
 description: >-
   BUILDING BLOCK for interactive Sigma "data apps" from code (workbooks-as-code, beta
-  POST /v2/workbooks/spec) — scenario modelers, revenue/demand FORECASTING,
+  POST /v2/workbooks) — scenario modelers, revenue/demand FORECASTING,
   budgeting/planning, write-back tools, and ADJUSTMENT + change-log apps (users
   edit values via a modal, every change logged). For a full branded company dashboard /
   POV (which already includes a scenario-modeler page), use **sigma-company-dashboard**.
@@ -68,7 +68,7 @@ description: >-
 
 
 Given "let users model / forecast / adjust / write back data," build a working
-interactive app via `POST /v2/workbooks/spec`. Verified end-to-end on staging.
+interactive app via `POST /v2/workbooks`. Verified end-to-end on staging.
 Pair with `[[sigma-code-rep-interactivity]]` (memory) for the raw shape cheatsheet
 and `sigma-company-dashboard` for the read-only dashboard half.
 
