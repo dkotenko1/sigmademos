@@ -4370,14 +4370,15 @@ STATEMENTS["arch"] = {
 #     FOOTPRINTS["myco"] = [...]; LABELS["myco"] = {...}; PLUGINS["myco"] = {...}
 #     COMPANIES["myco"] = MYCO
 #
-# Files starting with "_" are skipped. COMPANIES_DIR overrides the folder.
+# Files starting with "_" are skipped. COMPANIES_DIR overrides the folder; with
+# SIGMA_PROJECT_DIR set the default is <project>/companies.
 # See companies/README.md.
 # ---------------------------------------------------------------------------
 import os as _os
 import pathlib as _pl
 
-_COMPANIES_DIR = _pl.Path(_os.environ.get("COMPANIES_DIR")
-                          or _pl.Path(__file__).resolve().parent.parent / "companies")
+_PROJECT = _pl.Path(_os.environ.get("SIGMA_PROJECT_DIR") or _pl.Path(__file__).resolve().parent.parent)
+_COMPANIES_DIR = _pl.Path(_os.environ.get("COMPANIES_DIR") or _PROJECT / "companies")
 LOADED_EXTERNAL = []
 if _COMPANIES_DIR.is_dir():
     for _f in sorted(_COMPANIES_DIR.glob("*.py")):

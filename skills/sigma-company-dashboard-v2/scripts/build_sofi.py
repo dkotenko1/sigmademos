@@ -45,8 +45,8 @@ PRODUCT_NAMES = ", ".join(p[0] for p in CFG["products"])
 B.apply(CFG)
 import sigmaapi as S
 
-SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
-SPECS = pathlib.Path(__file__).resolve().parent.parent / "specs"
+SQL = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "sql"
+SPECS = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "specs"
 # a fresh git clone has no specs/ (it is gitignored, per-session output) --
 # a genuinely new SE hit FileNotFoundError here on the very first cold
 # clone-and-build test. Create it once, here, rather than at every write site.

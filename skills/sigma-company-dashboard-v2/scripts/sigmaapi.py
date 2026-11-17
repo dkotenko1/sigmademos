@@ -23,10 +23,11 @@ import urllib.error
 import urllib.request
 
 def _load_dotenv():
-    """Load KEY=VALUE lines from the first .env found (scripts/.env, the skill
-    folder, the repo root, then the cwd). Real environment variables win."""
+    """Load KEY=VALUE lines from the first .env found ($SIGMA_PROJECT_DIR, scripts/.env,
+    the skill folder, the repo root, then the cwd). Real environment variables win."""
     here = pathlib.Path(__file__).resolve().parent
-    for d in (here, here.parent, here.parent.parent.parent, pathlib.Path.cwd()):
+    proj = os.environ.get("SIGMA_PROJECT_DIR")
+    for d in ([pathlib.Path(proj)] if proj else []) + [here, here.parent, here.parent.parent.parent, pathlib.Path.cwd()]:
         f = d / ".env"
         if f.is_file():
             for line in f.read_text().splitlines():

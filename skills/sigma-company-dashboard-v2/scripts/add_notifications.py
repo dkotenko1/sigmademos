@@ -16,6 +16,7 @@ built this way.
 """
 
 import json
+import os
 import pathlib
 import sys
 
@@ -23,7 +24,7 @@ import brand as B
 import sigmaapi as S
 
 WORKBOOK = "8f10c147-da2e-4e45-ba0c-b51934255571"
-SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
+SQL = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "sql"
 NT = "Notifications"
 
 # lucide-style glyphs, stroked in the severity colour

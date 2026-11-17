@@ -27,6 +27,9 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 SKILL = HERE.parent
+# Specs/shots/assets/sql/companies/.env come from SIGMA_PROJECT_DIR when set (a customer
+# project folder), else from this skill folder.
+PROJ = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or SKILL)
 
 
 def run(label, args, env, check=True):
@@ -57,7 +60,7 @@ def main():
 
     # Is this the tracked workbook? Updating it keeps the guard; anything else must not.
     tracked = None
-    tf = SKILL / "specs" / "workbook_id.txt"
+    tf = PROJ / "specs" / "workbook_id.txt"
     if tf.exists():
         tracked = tf.read_text().strip()
     side = a.copy or (a.update and a.update != tracked)
@@ -78,14 +81,14 @@ def main():
         wid = a.update
     else:
         run("create" + (" (copy)" if a.copy else ""), ["build_sofi.py", "create"], env)
-        f = SKILL / "specs" / (("workbook_id_copy_%s.txt" % a.company) if a.copy else "workbook_id.txt")
+        f = PROJ / "specs" / (("workbook_id_copy_%s.txt" % a.company) if a.copy else "workbook_id.txt")
         wid = f.read_text().strip()
 
     if a.report:
         run("statement report", ["build_statement.py", "create"], env, check=False)
 
     if not a.no_shots:
-        out = SKILL / "shots" / (a.company + ("-copy" if side else ""))
+        out = PROJ / "shots" / (a.company + ("-copy" if side else ""))
         run("screenshots -> %s" % out, ["shot.py", "workbook", wid, str(out)], env, check=False)
 
     print("\n✓ done. workbook id: %s" % wid)

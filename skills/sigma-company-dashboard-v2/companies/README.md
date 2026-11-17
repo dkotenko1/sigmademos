@@ -32,3 +32,15 @@ Copy the block of the closest existing company (search `company.py` for e.g.
 * Put logo files in `assets/<prefix>_logo_white.datauri.txt` and SQL in `sql/`.
 * Run `python3 scripts/demo.py myco --dry-run` before creating anything.
 * To keep customer files outside the repo, set `COMPANIES_DIR=/path/to/dir`.
+
+## Customer projects (no generator copy)
+
+A customer folder only needs `assets/`, `sql/`, `specs/`, `companies/<key>.py` and a `.env`.
+Point the shared generator at it with `SIGMA_PROJECT_DIR`:
+
+```bash
+SIGMA_PROJECT_DIR=/path/to/project COMPANY=<key> python3 <repo>/skills/sigma-company-dashboard-v2/scripts/demo.py <key> --dry-run
+```
+
+`SIGMA_PROJECT_DIR` redirects assets, sql, specs, shots, `.env` and `companies/` to that folder
+(default: the skill folder). A project-level `run.sh` wrapper can hide the paths.
