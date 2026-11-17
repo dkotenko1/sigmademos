@@ -1,4 +1,56 @@
+# LEGACY EXAMPLE (checked 2026-11-17): the POST now goes to /v2/workbooks with `contents`, but this
+# file still emits the pre-2026-08 layout XML dialect (<LayoutElement>/<GridContainer>) and the live API
+# rejects it ("unknown element ... expected Element, Container, or TabbedContainer"). Treat it as a
+# reference for element shapes only; for a working build use sigma-company-dashboard-v2/scripts/build_sofi.py.
 import json,sys,base64,urllib.request
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE,TOKEN,CONN,FOLDER=sys.argv[1:5]
 AICONN="SNOWFLAKE.CORTEX.COMPLETE"; SANKEY="b4b809c8-8699-42ab-abf6-43775cf863e0"
 H={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"}
@@ -47,7 +99,7 @@ COLS=[("c-date","DATE","Date"),("c-month","USE_MONTH","Month"),("c-period","PERI
  ("c-chan","ACQ_CHANNEL","Acquisition Channel"),("c-net","NETWORK","Network"),("c-prod","PRODUCT_LINE","Product Line"),
  ("c-state","STORE_STATE","State"),("c-rev","REVENUE","Revenue"),("c-gp","GROSS_PROFIT","Gross Profit"),("c-spend","MARKETING_SPEND","Marketing Spend")]
 tbl={"id":"tbl","kind":"table","source":{"connectionId":CONN,"statement":SQL,"kind":"sql"},
- "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],"name":MF,"order":[c[0] for c in COLS],"visibleAsSource":True}
+ "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],"name":MF,"order":[c[0] for c in COLS]}
 # journey aggregate for the sankey
 JSQL=f"""SELECT ACQ_CHANNEL, NETWORK, PRODUCT_LINE, SUM(REVENUE) REVENUE FROM (
  SELECT GET(ARRAY_CONSTRUCT('Paid Search','Paid Social'), MOD(ABS(HASH(ORDER_NUMBER)),2))::string AS ACQ_CHANNEL,
@@ -56,7 +108,7 @@ JSQL=f"""SELECT ACQ_CHANNEL, NETWORK, PRODUCT_LINE, SUM(REVENUE) REVENUE FROM (
  FROM SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS) GROUP BY 1,2,3"""
 journey={"id":"journey","kind":"table","source":{"connectionId":CONN,"statement":JSQL,"kind":"sql"},
  "columns":[{"id":"j-chan","formula":"[Custom SQL/ACQ_CHANNEL]","name":"Acquisition Channel"},{"id":"j-net","formula":"[Custom SQL/NETWORK]","name":"Network"},{"id":"j-prod","formula":"[Custom SQL/PRODUCT_LINE]","name":"Product Line"},{"id":"j-rev","formula":"[Custom SQL/REVENUE]","name":"Revenue","format":CUR}],
- "name":"Customer Journey","order":["j-chan","j-net","j-prod","j-rev"],"visibleAsSource":True}
+ "name":"Customer Journey","order":["j-chan","j-net","j-prod","j-rev"]}
 
 # ============ header (navy hero + white logo + title + tabs) ============
 masthead={"id":"c-hdr","kind":"container","style":{"backgroundColor":NAVY,"borderRadius":"round"},"backgroundImage":{"source":{"kind":"url","url":hero},"style":{"fit":"cover"}}}
@@ -70,7 +122,7 @@ def kpi(elid,title,mainf,fmt,trend,g):
     tt={"id":f"t-{elid}","kind":"image","source":{"kind":"url","url":timg(title,24)},"style":{"fit":"scale-down"}}
     lc={"id":f"lc-{elid}","kind":"image","source":{"kind":"url","url":timg("Current Period",26,"#E6F0FF",600)},"style":{"fit":"scale-down"}}
     lp={"id":f"lp-{elid}","kind":"image","source":{"kind":"url","url":timg("Prior Year",26,"#E6F0FF",600)},"style":{"fit":"scale-down"}}
-    def k(sfx,per): return {"id":f"k-{elid}{sfx}","kind":"kpi-chart","source":{"elementId":"tbl","kind":"table"},"columns":[{"id":f"k-{elid}{sfx}v","formula":mainf.replace("§",per),"name":per,"format":fmt}],"value":{"columnId":f"k-{elid}{sfx}v","color":"#FFFFFF","fontSize":30},"name":{"visibility":"hidden"},"layout":{"anchor":"middle"},"style":dict(TRANS)}
+    def k(sfx,per): return {"id":f"k-{elid}{sfx}","kind":"kpi-chart","source":{"elementId":"tbl","kind":"table"},"columns":[{"id":f"k-{elid}{sfx}v","formula":mainf.replace("§",per),"name":per,"format":fmt}],"value":{"columnId":f"k-{elid}{sfx}v","color":"#FFFFFF","fontSize":30},"name":{"visibility":"hidden"},"layout":{"anchor":"center"},"style":dict(TRANS)}
     kc=k("c","Current Period"); kp=k("p","Prior Year")
     # line chart WITH visible date x-axis (the differentiator)
     ln={"id":f"ln-{elid}","kind":"line-chart","source":{"elementId":"tbl","kind":"table"},
@@ -100,7 +152,7 @@ ai_body=('{{ Replace(CallText("'+AICONN+'", "CLAUDE-4-SONNET", '
  '& Text(Round(Sum(['+MF+'/Marketing Spend])/1000000,0)) & "M, and ROAS " '
  '& Text(Round(Sum(['+MF+'/Revenue])/Sum(['+MF+'/Marketing Spend]),2)) & "x. Comment on efficiency and the strongest channel."), \'"\', \'\') }}')
 ai_box={"id":"c-ai","kind":"container","style":{"backgroundColor":"#EEF4FF","borderColor":BLU,"borderWidth":1,"borderRadius":"round"}}
-ai_sum={"id":"txt-ai","kind":"text","body":"**⚡ AI INSIGHT**\n\n"+ai_body,"verticalAlign":"middle","style":{"color":"#0B1B33"}}
+ai_sum={"id":"txt-ai","kind":"text","body":"**⚡ AI INSIGHT**\n\n"+ai_body,"verticalAlign":"center","style":{"color":"#0B1B33"}}
 
 # filter buttons (segmented) + selectors
 grain={"kind":"control","controlId":"DateGrain","id":"ctrl-grain","name":"Date Grain","controlType":"segmented","value":"Month","source":{"kind":"manual","valueType":"text","values":["Quarter","Month","Week","Day"]}}
@@ -117,7 +169,7 @@ sbar={"id":"sbar","kind":"bar-chart","source":{"elementId":"tbl","kind":"table"}
 # pivot heatmap: Product Line share by Month
 heat={"id":"heat","kind":"pivot-table","source":{"elementId":"tbl","kind":"table"},
  "columns":[{"id":"hm","formula":f"[{MF}/Month]","name":"Month"},{"id":"hp","formula":f"[{MF}/Product Line]","name":"Product Line"},{"id":"hv","formula":f"Sum([{MF}/Revenue])","name":"Revenue","format":CUR}],
- "rowsBy":[{"id":"hm"}],"columnsBy":[{"id":"hp"}],"values":["hv"],
+ "rowsBy":[{"columnId":"hm"}],"columnsBy":[{"columnId":"hp"}],"values":["hv"],
  "conditionalFormats":[{"type":"single","columnIds":["hv"],"condition":"IsNotNull","style":{"backgroundColor":"#E8F1FF"}}],
  "name":{"text":"Revenue Heatmap — Product Line by Month","fontWeight":"bold","fontSize":14,"color":INK},"style":dict(CARD)}
 # sankey plugin
@@ -130,22 +182,22 @@ PCT2={"kind":"number","formatString":"+,.1%"}
 masthead2={"id":"c-hdr2","kind":"container","style":{"backgroundColor":NAVY,"borderRadius":"round"},"backgroundImage":{"source":{"kind":"url","url":hero},"style":{"fit":"cover"}}}
 logo2={"id":"img-logo2","kind":"image","source":{"kind":"url","url":logo_uri},"style":{"fit":"contain"}}
 htitle2={"id":"img-htitle2","kind":"image","source":{"kind":"url","url":timg("Scenario Modeler",22,"#DCE9FF",600,"start",4)},"style":{"fit":"contain"}}
-mbase={"id":"mbase","kind":"table","name":"Model Base","visibleAsSource":True,"source":{"connectionId":CONN,"kind":"sql","statement":f"SELECT GET({CARR}, MOD(ABS(HASH(PRODUCT_FAMILY)),8))::string AS PRODUCT_LINE, QUANTITY*PRICE AS REVENUE FROM SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS"},"columns":[{"id":"mb-prod","formula":"[Custom SQL/PRODUCT_LINE]","name":"Product Line"},{"id":"mb-rev","formula":"[Custom SQL/REVENUE]","name":"Revenue","format":CUR}],"order":["mb-prod","mb-rev"]}
+mbase={"id":"mbase","kind":"table","name":"Model Base","source":{"connectionId":CONN,"kind":"sql","statement":f"SELECT GET({CARR}, MOD(ABS(HASH(PRODUCT_FAMILY)),8))::string AS PRODUCT_LINE, QUANTITY*PRICE AS REVENUE FROM SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS"},"columns":[{"id":"mb-prod","formula":"[Custom SQL/PRODUCT_LINE]","name":"Product Line"},{"id":"mb-rev","formula":"[Custom SQL/REVENUE]","name":"Revenue","format":CUR}],"order":["mb-prod","mb-rev"]}
 scen={"id":"scenarios","kind":"input-table","source":{"kind":"empty","connectionId":CONN},"inputMode":"edit","name":"Scenario Names","columns":[{"id":"sc-name","type":"text","name":"Scenario Name"},{"id":"sc-status","type":"text","name":"Status","values":["Draft","Submitted","Approved"],"pills":"color-by-option"}]}
-pivot={"id":"pivot","kind":"pivot-table","name":"Pivot","visibleAsSource":True,"source":{"kind":"join","joins":[{"left":{"elementId":"mbase","kind":"table"},"right":{"elementId":"scenarios","kind":"table"},"columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"mbase","kind":"table"}},"columns":[{"id":"pv-prod","formula":"[Model Base/Product Line]","name":"Product Line"},{"id":"pv-scen","formula":"[Scenario Names/Scenario Name]","name":"Scenario"},{"id":"pv-rev","formula":"Sum([Model Base/Revenue])","name":"Revenue","format":CUR}],"rowsBy":[{"id":"pv-prod"}],"values":["pv-rev"]}
+pivot={"id":"pivot","kind":"pivot-table","name":"Pivot","source":{"kind":"join","joins":[{"left":{"elementId":"mbase","kind":"table"},"right":{"elementId":"scenarios","kind":"table"},"columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"mbase","kind":"table"}},"columns":[{"id":"pv-prod","formula":"[Model Base/Product Line]","name":"Product Line"},{"id":"pv-scen","formula":"[Scenario Names/Scenario Name]","name":"Scenario"},{"id":"pv-rev","formula":"Sum([Model Base/Revenue])","name":"Revenue","format":CUR}],"rowsBy":[{"columnId":"pv-prod"}],"values":["pv-rev"]}
 forecast={"id":"forecast","kind":"input-table","source":{"kind":"linked","from":"pivot"},"inputMode":"edit","name":"Forecast Entry","columns":[{"id":"lk-prod","key":"pv-prod"},{"id":"lk-scen","key":"pv-scen","hidden":True},{"id":"lk-base","key":"pv-rev"},{"id":"lk-fc","type":"number","name":"Forecasted Revenue","format":CUR}],"order":["lk-prod","lk-scen","lk-base","lk-fc"],"conditionalFormats":[{"type":"single","columnIds":["lk-fc"],"condition":"IsNotNull","style":{"backgroundColor":"#E7F1FB"}}]}
-detail={"id":"detail","kind":"table","name":"Detail","visibleAsSource":True,"source":{"elementId":"forecast","kind":"table"},"columns":[{"id":"d-prod","formula":"[Forecast Entry/Product Line]","name":"Product Line"},{"id":"d-scen","formula":"[Forecast Entry/Scenario]","name":"Scenario"}],"order":["d-prod","d-scen"]}
+detail={"id":"detail","kind":"table","name":"Detail","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":"d-prod","formula":"[Forecast Entry/Product Line]","name":"Product Line"},{"id":"d-scen","formula":"[Forecast Entry/Scenario]","name":"Scenario"}],"order":["d-prod","d-scen"]}
 subs={"id":"subs","kind":"input-table","source":{"kind":"empty","connectionId":CONN},"inputMode":"edit","name":"Submissions","columns":[{"id":"su-scen","type":"text","name":"Scenario"},{"id":"su-status","type":"text","name":"Status","values":["Submitted","Approved"],"pills":"color-by-option"}]}
 selctrl={"kind":"control","controlId":"scenarioSelect","id":"ctrl-sel","name":"Scenario","controlType":"list","selectionMode":"single","mode":"include","filters":[{"source":{"kind":"table","elementId":"detail"},"columnId":"d-scen"}],"source":{"kind":"source","source":{"kind":"table","elementId":"detail"},"columnId":"d-scen"}}
 BASE_M='Sum([Forecast Entry/Revenue])'; FC_M='Sum(Coalesce([Forecast Entry/Forecasted Revenue],[Forecast Entry/Revenue]))'
 def gcard(idp,title,mainf,mainfmt,deltaf=None):
     cont={"id":f"c-{idp}","kind":"container","style":{"borderRadius":"round"},"backgroundImage":{"source":{"kind":"url","url":KG[0]},"style":{"fit":"cover"}}}
     t={"id":f"t-{idp}","kind":"image","source":{"kind":"url","url":timg(title.upper(),24)},"style":{"fit":"scale-down"}}
-    v={"id":f"v-{idp}","kind":"kpi-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":f"{idp}mv","formula":mainf,"name":title,"format":mainfmt}],"value":{"columnId":f"{idp}mv","fontSize":34,"color":"#FFFFFF"},"name":{"visibility":"hidden"},"layout":{"anchor":"middle"},"style":dict(TRANS)}
+    v={"id":f"v-{idp}","kind":"kpi-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":f"{idp}mv","formula":mainf,"name":title,"format":mainfmt}],"value":{"columnId":f"{idp}mv","fontSize":34,"color":"#FFFFFF"},"name":{"visibility":"hidden"},"layout":{"anchor":"center"},"style":dict(TRANS)}
     els=[cont,t,v]; rows=[f'<LayoutElement elementId="t-{idp}" gridColumn="1 / 13" gridRow="1 / 3"/>',f'<LayoutElement elementId="v-{idp}" gridColumn="1 / 13" gridRow="3 / 8"/>']
     if deltaf:
         dl={"id":f"dl-{idp}","kind":"image","source":{"kind":"url","url":timg("vs Baseline",18,"#CFE4F7",600)},"style":{"fit":"scale-down"}}
-        d={"id":f"d-{idp}","kind":"kpi-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":f"{idp}dv","formula":deltaf,"name":"vs Baseline","format":DCUR}],"value":{"columnId":f"{idp}dv","fontSize":16,"color":"#FFFFFF"},"name":{"visibility":"hidden"},"layout":{"anchor":"middle"},"style":dict(TRANS)}
+        d={"id":f"d-{idp}","kind":"kpi-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":f"{idp}dv","formula":deltaf,"name":"vs Baseline","format":DCUR}],"value":{"columnId":f"{idp}dv","fontSize":16,"color":"#FFFFFF"},"name":{"visibility":"hidden"},"layout":{"anchor":"center"},"style":dict(TRANS)}
         els+=[dl,d]; rows+=[f'<LayoutElement elementId="dl-{idp}" gridColumn="1 / 13" gridRow="8 / 9"/>',f'<LayoutElement elementId="d-{idp}" gridColumn="1 / 13" gridRow="9 / 11"/>']
     lay=f'  <GridContainer elementId="c-{idp}" type="grid" gridColumn="{{col}}" gridRow="8 / 17" gridTemplateColumns="repeat(12, 1fr)" gridTemplateRows="auto">\n    '+"\n    ".join(rows)+"\n  </GridContainer>"
     return els,lay
@@ -156,7 +208,7 @@ mkpi=c1e+c2e+c3e; mkpilay=c1l.replace("{col}","1 / 9")+"\n"+c2l.replace("{col}",
 rvf2={"id":"rvf2","kind":"bar-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":"r2d","formula":"[Forecast Entry/Product Line]","name":"Product Line"},{"id":"r2b","formula":"Sum([Forecast Entry/Revenue])","name":"Revenue","format":CUR},{"id":"r2f","formula":"Sum(Coalesce([Forecast Entry/Forecasted Revenue],[Forecast Entry/Revenue]))","name":"Forecasted Revenue","format":CUR}],"xAxis":{"columnId":"r2d","sort":{"by":"r2b","direction":"descending"}},"yAxis":{"columnIds":["r2b","r2f"]},"stacking":"none","legend":{"visibility":"visible"},"name":{"text":"Revenue vs Forecasted Revenue by Product Line","fontWeight":"bold","fontSize":14,"color":INK},"style":dict(CARD)}
 create_tb={"id":"create_tb","kind":"button","text":"+ Create","appearance":"filled","actions":[{"id":"o1","trigger":"on-click","effects":[{"effect":"open-overlay","overlayId":"createModal"}]}]}
 submit_tb={"id":"submit_tb","kind":"button","text":"Submit","appearance":"outline","actions":[{"id":"s1","trigger":"on-click","effects":[{"effect":"insert-rows","tableElementId":"subs","values":{"su-scen":{"type":"control","control":"scenarioSelect"},"su-status":{"type":"constant","value":{"type":"text","value":"Submitted"}}}}]}]}
-mtitle={"id":"mtitle","kind":"text","body":"### New scenario\nName it, then Create — it copies the baseline for every product line.","verticalAlign":"middle"}
+mtitle={"id":"mtitle","kind":"text","body":"### New scenario\nName it, then Create — it copies the baseline for every product line.","verticalAlign":"center"}
 namectrl={"kind":"control","controlId":"newScenarioName","id":"ctrl-name","name":"Scenario Name","controlType":"text","mode":"equals","case":"insensitive","includeNulls":"when-no-value-is-selected","showOperators":False}
 createbtn={"id":"createbtn","kind":"button","text":"Create","appearance":"filled","actions":[{"id":"c1","trigger":"on-click","effects":[{"effect":"insert-rows","tableElementId":"scenarios","values":{"sc-name":{"type":"control","control":"newScenarioName"},"sc-status":{"type":"constant","value":{"type":"text","value":"Draft"}}}},{"effect":"set-control-value","control":"scenarioSelect","value":{"type":"control","control":"newScenarioName"}},{"effect":"clear-control","scope":{"type":"control","controlId":"newScenarioName"}},{"effect":"close-overlay"}]}]}
 cancelbtn={"id":"cancelbtn","kind":"button","text":"Cancel","appearance":"outline","actions":[{"id":"x1","trigger":"on-click","effects":[{"effect":"close-overlay"}]}]}
@@ -197,11 +249,11 @@ theme={"colors":{"text":INK,"highlight":BLU,"success":GRN,"warning":"#F59E0B","d
  "fonts":{"textFont":"Inter","dataFont":"Inter"},"pageWidth":"full","tableStyles":{"preset":"presentation","cellSpacing":"small"}}
 spec={"name":"adMarketplace — Marketing Control Center","folderId":FOLDER,"schemaVersion":1,"pages":[{"id":"pg","name":"Marketing Performance Analysis","elements":elements},{"id":"model","name":"Scenario Modeler","elements":p2},create_modal],"layout":layout,"themeOverrides":theme}
 open("admp.json","w").write(json.dumps(spec,indent=1))
-r=urllib.request.Request(BASE+"/v2/workbooks/spec",data=json.dumps(spec).encode(),headers=H,method="POST")
+r=urllib.request.Request(BASE+"/v2/workbooks",data=json.dumps(_wb_body(spec)).encode(),headers=H,method="POST")
 try:
     resp=urllib.request.urlopen(r,timeout=120).read().decode()
-    print("POST:", "ACCEPTED" if "success: true" in resp else resp[:600])
-    wid=[l.split()[-1] for l in resp.splitlines() if "workbookId" in l]
+    print("POST:", "ACCEPTED" if "workbookId" in resp else resp[:600])
+    wid=__import__("re").findall(r'"?workbookId"?:\s*"?([\w-]+)', resp)
     if wid: print("URL:", json.loads(urllib.request.urlopen(urllib.request.Request(BASE+f"/v2/workbooks/{wid[0]}",headers=H),timeout=30).read().decode()).get("url"))
 except urllib.error.HTTPError as e:
     print("HTTP",e.code,":",json.loads(e.read().decode()).get("message","")[:600])

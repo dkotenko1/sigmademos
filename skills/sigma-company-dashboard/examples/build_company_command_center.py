@@ -22,6 +22,54 @@ KPI STANDARD (do not regress): each card kpi-chart has a value column AND a comp
 Never bake KPI titles as SVG images.
 """
 import json,sys,os,base64,urllib.request,urllib.error,xml.dom.minidom as _MD
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE,TOKEN,CONN,FOLDER=sys.argv[1:5]
 AICONN="SNOWFLAKE.CORTEX.COMPLETE"; CLOCK=os.environ.get("PLUGIN_ID","REPLACE_WITH_YOUR_PLUGIN_ID")
 KPI_STYLE=os.environ.get("KPI_STYLE","gradient")  # "gradient" (default) or "flat" -- see card()
@@ -99,11 +147,11 @@ def card(elid,src,title,v1f,v2f,v2lab,fmt,g,trend=None,rowband="5 / 13",style=No
           "value":{"columnId":f"k-{elid}cv","color":val_color,"fontSize":32},
           "comparisonColumn":{"columnId":f"k-{elid}cc"},
           "comparison":{"display":"delta","colorGood":good,"colorBad":bad,"fontSize":13},
-          "name":{"text":title,"color":title_color,"fontSize":15},"layout":{"anchor":"middle"},"style":{"backgroundColor":"transparent","padding":"none"}}
+          "name":{"text":title,"color":title_color,"fontSize":15},"layout":{"anchor":"center"},"style":{"backgroundColor":"transparent","padding":"none"}}
         right={"id":f"k-{elid}p","kind":"kpi-chart","source":{"elementId":src,"kind":"table"},
           "columns":[{"id":f"k-{elid}pv","formula":v2f,"name":v2lab,"format":fmt}],
           "value":{"columnId":f"k-{elid}pv","color":sub_color,"fontSize":28},
-          "name":{"text":v2lab,"color":title_color,"fontSize":13},"layout":{"anchor":"middle"},"style":{"backgroundColor":"transparent","padding":"none"}}
+          "name":{"text":v2lab,"color":title_color,"fontSize":13},"layout":{"anchor":"center"},"style":{"backgroundColor":"transparent","padding":"none"}}
         els+=[left,right]
         inner+=(f'    <Element elementId="k-{elid}c" gridColumn="1 / 7" gridRow="1 / 9"/>\n'
                 f'    <Element elementId="k-{elid}p" gridColumn="7 / 13" gridRow="1 / 9"/>\n')
@@ -111,7 +159,7 @@ def card(elid,src,title,v1f,v2f,v2lab,fmt,g,trend=None,rowband="5 / 13",style=No
         left={"id":f"k-{elid}c","kind":"kpi-chart","source":{"elementId":src,"kind":"table"},
           "columns":[{"id":f"k-{elid}cv","formula":v1f,"name":title,"format":fmt}],
           "value":{"columnId":f"k-{elid}cv","color":val_color,"fontSize":40},
-          "name":{"text":title,"color":title_color,"fontSize":16},"layout":{"anchor":"middle"},"style":{"backgroundColor":"transparent","padding":"none"}}
+          "name":{"text":title,"color":title_color,"fontSize":16},"layout":{"anchor":"center"},"style":{"backgroundColor":"transparent","padding":"none"}}
         els.append(left); inner+=f'    <Element elementId="k-{elid}c" gridColumn="1 / 13" gridRow="1 / 9"/>\n'
     if trend:
         els.append(_spark(elid,src,trend)); inner+=f'    <Element elementId="ln-{elid}" gridColumn="1 / 13" gridRow="9 / 12"/>\n'
@@ -145,13 +193,13 @@ COLS=[("c-date","DATE","Date"),("c-month","USE_MONTH","Month"),("c-period","PERI
  ("c-cat","CATEGORY","Category"),("c-sub","SUBCATEGORY","Subcategory"),("c-reg","REGION","Region"),
  ("c-order","ORDER_NUMBER","Order"),("c-cons","CONSUMER","Consumer"),("c-gov","GOV","GOV"),("c-rev","REVENUE","Revenue")]
 tbl={"id":"tbl","kind":"table","source":{"connectionId":CONN,"statement":SQL,"kind":"sql"},
- "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],"name":MF,"order":[c[0] for c in COLS],"visibleAsSource":True}
+ "columns":[{"id":c,"formula":f"[Custom SQL/{s}]","name":d} for c,s,d in COLS],"name":MF,"order":[c[0] for c in COLS]}
 # demand-clock source: synthetic 24-hour order profile
 PROFILE=[3,2,1,1,1,2,5,9,11,9,10,22,26,18,11,10,13,20,30,33,27,17,9,5]
 PROFARR="ARRAY_CONSTRUCT("+",".join(str(x) for x in PROFILE)+")"
 DEMSQL=f"""WITH g AS (SELECT SEQ4() h FROM TABLE(GENERATOR(ROWCOUNT=>24)))
 SELECT h AS HOUR, ROUND(GET({PROFARR}, h)*25000) AS ORDERS FROM g"""
-demand={"id":"demand","kind":"table","name":"Hourly Demand","visibleAsSource":True,
+demand={"id":"demand","kind":"table","name":"Hourly Demand",
  "source":{"connectionId":CONN,"kind":"sql","statement":DEMSQL},
  "columns":[{"id":"dm-hour","formula":"[Custom SQL/HOUR]","name":"Hour"},{"id":"dm-orders","formula":"[Custom SQL/ORDERS]","name":"Orders","format":NUM}],
  "order":["dm-hour","dm-orders"]}
@@ -174,8 +222,8 @@ ai_body=('{{ Replace(CallText("'+AICONN+'", "CLAUDE-4-SONNET", '
  '& Text(Round(Sum(['+MF+'/Revenue])/Sum(['+MF+'/GOV])*100,1)) & "%. Note the leading category and the daypart demand pattern."), \'"\', \'\') }}')
 ai_box={"id":"c-ai","kind":"container","style":dict(TINT)}
 ai_ic=img_el("ai-ic","data:image/svg+xml;base64,"+b64('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="'+RED+'" stroke="'+RED+'" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'),fit="contain")
-ai_hd={"id":"ai-hd","kind":"text","body":"**AI insight**","verticalAlign":"middle","style":{"color":INK}}
-ai_sum={"id":"txt-ai","kind":"text","body":ai_body,"verticalAlign":"middle","style":{"color":"#3A2C2C"}}
+ai_hd={"id":"ai-hd","kind":"text","body":"**AI insight**","verticalAlign":"center","style":{"color":INK}}
+ai_sum={"id":"txt-ai","kind":"text","body":ai_body,"verticalAlign":"center","style":{"color":"#3A2C2C"}}
 grain={"kind":"control","controlId":"DateGrain","id":"ctrl-grain","name":"Date Grain","controlType":"segmented","value":"Month","source":{"kind":"manual","valueType":"text","values":["Quarter","Month","Week","Day"]}}
 colorby={"kind":"control","controlId":"ColorBy","id":"ctrl-colorby","name":"Color By","controlType":"segmented","value":"Category","source":{"kind":"manual","valueType":"text","values":["Category","Subcategory","Region"]}}
 ctrl_cat={"kind":"control","controlId":"CatF","id":"ctrl-catf","name":"Category","controlType":"list","selectionMode":"multiple","mode":"include","values":[],"filters":[{"source":{"kind":"table","elementId":"tbl"},"columnId":"c-cat"}],"source":{"kind":"source","source":{"kind":"table","elementId":"tbl"},"columnId":"c-cat"}}
@@ -187,17 +235,17 @@ sbar={"id":"sbar","kind":"bar-chart","source":{"elementId":"tbl","kind":"table"}
             {"id":"sb-cat","formula":f"[{MF}/Category]","name":"Category"},{"id":"sb-sub","formula":f"[{MF}/Subcategory]","name":"Subcategory"},{"id":"sb-reg","formula":f"[{MF}/Region]","name":"Region"}],
  "xAxis":{"columnId":"sbm"},"yAxis":{"columnIds":["sbv"]},"color":{"by":"category","column":"sbc","scheme":["#EB1700","#B3122E","#F0872E","#C0453A","#5B2340","#8A8F94","#2E6FB0","#0E7C7B"]},"stacking":"stacked",
  "dataLabel":{"labels":"hidden"},"legend":{"visibility":"visible"},"name":{"text":"Gross order value by period & category","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
-clock_hd={"id":"clock-hd","kind":"text","body":"**Order demand by hour of day (daypart)**","verticalAlign":"middle","style":{"color":INK}}
+clock_hd={"id":"clock-hd","kind":"text","body":"**Order demand by hour of day (daypart)**","verticalAlign":"center","style":{"color":INK}}
 clock_el={"id":"clockviz","kind":"plugin","pluginId":CLOCK,"config":{"source":{"kind":"element","elementId":"demand"},"hour":"dm-hour","value":"dm-orders"}}
 # Current standard (2026-07): the left column (trend chart / plugin / detail tables)
 # is a TABBED CONTAINER, not stacked -- see sigma-company-dashboard/SKILL.md
 # "Command-center layout" section. NO wrapping Container around the plugin
 # inside its Tab (verified to scramble render order) -- the plugin + its header
 # text are both bare Element children instead.
-tc_cc={"id":"tc-cc","kind":"tabbed-container","tabs":[{"name":"GOV Trend"},{"name":"Demand Clock"},{"name":"Detail Tables"}],"tabBar":{"alignment":"start"}}
+tc_cc={"id":"tc-cc","kind":"tabbed-container","tabs":[{"name":"GOV Trend"},{"name":"Demand Clock"},{"name":"Detail Tables"}],"tabBar":{"alignment":"left"}}
 heat={"id":"heat","kind":"pivot-table","source":{"elementId":"tbl","kind":"table"},
  "columns":[{"id":"hm","formula":f"[{MF}/Category]","name":"Category"},{"id":"hp","formula":f"[{MF}/Region]","name":"Region"},{"id":"hv","formula":f"Sum([{MF}/GOV])","name":"GOV","format":CUR}],
- "rowsBy":[{"id":"hm"}],"columnsBy":[{"id":"hp"}],"values":["hv"],
+ "rowsBy":[{"columnId":"hm"}],"columnsBy":[{"columnId":"hp"}],"values":["hv"],
  "conditionalFormats":[{"type":"single","columnIds":["hv"],"condition":"IsNotNull","style":{"backgroundColor":"#FCE3DC"}}],
  "name":{"text":"GOV — Category x Region","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 book={"id":"book","kind":"pivot-table","source":{"elementId":"tbl","kind":"table"},
@@ -205,7 +253,7 @@ book={"id":"book","kind":"pivot-table","source":{"elementId":"tbl","kind":"table
             {"id":"bk-gov","formula":f"Sum([{MF}/GOV])","name":"GOV","format":CUR},
             {"id":"bk-rev","formula":f"Sum([{MF}/Revenue])","name":"Revenue","format":CUR},
             {"id":"bk-take","formula":f"Sum([{MF}/Revenue])/Sum([{MF}/GOV])","name":"Take rate","format":PCT1}],
- "rowsBy":[{"id":"bk-cat"}],"values":["bk-gov","bk-rev","bk-take"],
+ "rowsBy":[{"columnId":"bk-cat"}],"values":["bk-gov","bk-rev","bk-take"],
  "conditionalFormats":[{"type":"single","columnIds":["bk-gov"],"condition":"IsNotNull","style":{"backgroundColor":"#FCE3DC"}}],
  "name":{"text":"Category mix","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 
@@ -224,9 +272,9 @@ def ag_scenario(with_tool):
 def rail(n,with_agent,rows,agent_id):
     c={"id":f"c-chat{n}","kind":"container","style":dict(CARD)}
     ric=img_el(f"chat-ic{n}","data:image/svg+xml;base64,"+b64('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="'+RED+'" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>'),fit="contain")
-    hdr={"id":f"chat-hdr{n}","kind":"text","body":"**Ask DoorDash AI**","verticalAlign":"middle","style":{"color":INK}}
+    hdr={"id":f"chat-hdr{n}","kind":"text","body":"**Ask DoorDash AI**","verticalAlign":"center","style":{"color":INK}}
     if with_agent: inner={"id":f"chat{n}","kind":"chat","agentId":agent_id}
-    else: inner={"id":f"chat{n}","kind":"text","verticalAlign":"middle","style":{"color":"#3A2C2C","backgroundColor":"#FCEEEA"},"body":"**Ask AI for Insights**\n\n- Which category drives the most GOV?\n- When does demand peak during the day?\n- What order + take-rate mix hits a revenue target?"}
+    else: inner={"id":f"chat{n}","kind":"text","verticalAlign":"center","style":{"color":"#3A2C2C","backgroundColor":"#FCEEEA"},"body":"**Ask AI for Insights**\n\n- Which category drives the most GOV?\n- When does demand peak during the day?\n- What order + take-rate mix hits a revenue target?"}
     lay=(f'  <Container elementId="c-chat{n}" type="grid" gridColumn="18 / 25" gridRow="{rows}" gridTemplateColumns="repeat(12, 1fr)" gridTemplateRows="auto">\n'
          f'    <Element elementId="chat-ic{n}" gridColumn="1 / 3" gridRow="1 / 2"/>\n'
          f'    <Element elementId="chat-hdr{n}" gridColumn="3 / 13" gridRow="1 / 2"/>\n'
@@ -266,21 +314,21 @@ ROWS=[('Restaurants','Prepared',6000000000,0.22),('Grocery','New verticals',1200
  ('Retail','New verticals',800000000,0.18),('DashMart','Owned',800000000,0.28)]
 VALS=",".join(f"('{p}','{c}',{rev},{m})" for p,c,rev,m in ROWS)
 SBASE=f"SELECT column1 AS CATEGORY, column2 AS GRP, column3 AS BASE_REV, column4 AS BASE_MARGIN FROM (VALUES {VALS})"
-sbase={"id":"sbase","kind":"table","name":"Category Base","visibleAsSource":True,
+sbase={"id":"sbase","kind":"table","name":"Category Base",
  "source":{"connectionId":CONN,"kind":"sql","statement":SBASE},
  "columns":[{"id":"sb-cat2","formula":"[Custom SQL/CATEGORY]","name":"Category"},{"id":"sb-grp","formula":"[Custom SQL/GRP]","name":"Segment"},
             {"id":"sb-rev2","formula":"[Custom SQL/BASE_REV]","name":"Revenue","format":CUR},{"id":"sb-mar","formula":"[Custom SQL/BASE_MARGIN]","name":"Margin","format":PCT1}],
  "order":["sb-cat2","sb-grp","sb-rev2","sb-mar"]}
 scenarios={"id":"scenarios","kind":"input-table","source":{"kind":"empty","connectionId":CONN},"inputMode":"edit","name":"Scenarios",
  "columns":[{"id":"sc-name","type":"text","name":"Scenario Name"},{"id":"sc-status","type":"text","name":"Status","values":["Draft","Submitted","Approved"],"pills":"color-by-option"}]}
-spivot={"id":"spivot","kind":"pivot-table","name":"Scenario Pivot","visibleAsSource":True,
+spivot={"id":"spivot","kind":"pivot-table","name":"Scenario Pivot",
  "source":{"kind":"join","joins":[{"left":{"elementId":"sbase","kind":"table"},"right":{"elementId":"scenarios","kind":"table"},"columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"sbase","kind":"table"}},
  "columns":[{"id":"pv-cat","formula":"[Category Base/Category]","name":"Category"},
             {"id":"pv-grp","formula":"[Category Base/Segment]","name":"Segment"},
             {"id":"pv-scen","formula":'Coalesce([Scenarios/Scenario Name],"Base Case")',"name":"Scenario"},
             {"id":"pv-rev","formula":"Sum([Category Base/Revenue])","name":"Revenue","format":CUR},
             {"id":"pv-mar","formula":"Avg([Category Base/Margin])","name":"Margin","format":PCT1}],
- "rowsBy":[{"id":"pv-cat"},{"id":"pv-grp"}],"values":["pv-rev","pv-mar"]}
+ "rowsBy":[{"columnId":"pv-cat"},{"columnId":"pv-grp"}],"values":["pv-rev","pv-mar"]}
 assum={"id":"assum","kind":"input-table","source":{"kind":"linked","from":"spivot"},"inputMode":"edit","name":"Assumptions",
  "columns":[{"id":"ia-cat","key":"pv-cat"},{"id":"ia-grp","key":"pv-grp"},{"id":"ia-scen","key":"pv-scen"},{"id":"ia-rev","key":"pv-rev"},{"id":"ia-mar","key":"pv-mar"},
             {"id":"ia-ord","type":"number","name":"Order Growth %"},
@@ -290,7 +338,7 @@ assum={"id":"assum","kind":"input-table","source":{"kind":"linked","from":"spivo
             {"id":"ia-pm","formula":"[Margin]*(1+Coalesce([Take Rate Change %],0)/100)*(1-Coalesce([Delivery Cost %],0)/100)","name":"Projected Margin","format":PCT1},
             {"id":"ia-pc","formula":"[Projected Revenue]*[Projected Margin]","name":"Projected Contribution","format":CUR}],
  "order":["ia-scen","ia-cat","ia-grp","ia-rev","ia-ord","ia-take","ia-cost","ia-prev","ia-pm","ia-pc"]}
-book2={"id":"book2","kind":"table","name":"Book","visibleAsSource":True,
+book2={"id":"book2","kind":"table","name":"Book",
  "source":{"elementId":"assum","kind":"table"},
  "columns":[{"id":"bb-scen","formula":"[Assumptions/Scenario]","name":"Scenario"},
             {"id":"bb-cat","formula":"[Assumptions/Category]","name":"Category"},
@@ -314,7 +362,7 @@ createbtn={"id":"createbtn","kind":"button","text":"Create scenario","appearance
     {"effect":"clear-control","scope":{"type":"control","controlId":"newScenarioName"}},
     {"effect":"close-overlay"}]}]}
 cancelbtn={"id":"cancelbtn","kind":"button","text":"Cancel","appearance":"outline","actions":[{"id":"x1","trigger":"on-click","effects":[{"effect":"close-overlay"}]}]}
-mtitle={"id":"mtitle","kind":"text","body":"### New scenario\nName it, then Create. It clones the current book for every category — edit the assumptions in the grid.","verticalAlign":"middle","style":{"color":INK}}
+mtitle={"id":"mtitle","kind":"text","body":"### New scenario\nName it, then Create. It clones the current book for every category — edit the assumptions in the grid.","verticalAlign":"center","style":{"color":INK}}
 modal={"id":"createModal","name":"Create Scenario","type":"modal","modal":{"width":"small","header":{"title":"New scenario","showCloseIcon":"hidden"},"footer":{"primaryCta":{"visible":"hidden"},"secondaryCta":{"visible":"hidden"}}},"elements":[mtitle,namectrl,createbtn,cancelbtn]}
 BREV='Sum([Book/Base Revenue])'; BC='Sum([Book/Base Contribution])'; PREV='Sum([Book/Projected Revenue])'; PC='Sum([Book/Projected Contribution])'
 P2K=[("p1","PROJECTED REVENUE",PREV,CUR,BREV),
@@ -333,9 +381,9 @@ cbar={"id":"cbar","kind":"bar-chart","source":{"elementId":"book2","kind":"table
  "legend":{"visibility":"hidden"},"name":{"text":"Projected revenue by category — active scenario","fontWeight":"bold","fontSize":15,"color":INK},"style":dict(CARD)}
 instr_c={"id":"c-instr","kind":"container","style":dict(TINT)}
 instr_ic=img_el("instr-ic","data:image/svg+xml;base64,"+b64('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="'+RED+'" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>'),fit="contain")
-instr_hd={"id":"instr-hd","kind":"text","body":"**How the scenario modeler works**","verticalAlign":"middle","style":{"color":INK}}
+instr_hd={"id":"instr-hd","kind":"text","body":"**How the scenario modeler works**","verticalAlign":"center","style":{"color":INK}}
 instr={"id":"instr","kind":"text","body":("**1** — **Create** a named scenario (clones the current book); pick it with **Active scenario**.  **2** — In the grid, type **Order Growth %**, **Take Rate Change %**, **Delivery Cost %** per category.  **3** — Cards, chart & Copilot re-project instantly. **Submit → Approve** to lock a plan. Leave a cell blank to hold a driver flat."),
- "verticalAlign":"middle","style":{"color":"#3A2C2C"}}
+ "verticalAlign":"center","style":{"color":"#3A2C2C"}}
 tb_c={"id":"c-tb","kind":"container","style":dict(CARD)}
 h2e,h2l=header("2","Growth & Margin Scenario Modeler","Model order growth, take rate & delivery cost by category")
 def page2(with_agent):
@@ -399,11 +447,11 @@ def qa(s):
             except Exception as e: bad+=1; print("INVALID SVG:",str(e)[:120])
     return bad
 def post(s):
-    r=urllib.request.Request(BASE+"/v2/workbooks/spec",data=json.dumps(s).encode(),headers=H,method="POST")
+    r=urllib.request.Request(BASE+"/v2/workbooks",data=json.dumps(_wb_body(s)).encode(),headers=H,method="POST")
     resp=urllib.request.urlopen(r,timeout=120).read().decode()
-    wid=[l.split()[-1] for l in resp.splitlines() if "workbookId" in l]
+    wid=__import__("re").findall(r'"?workbookId"?:\s*"?([\w-]+)', resp)
     url=json.loads(urllib.request.urlopen(urllib.request.Request(BASE+f"/v2/workbooks/{wid[0]}",headers=H),timeout=30).read().decode()).get("url") if wid else None
-    return ("success: true" in resp), url, resp
+    return ("workbookId" in resp), url, resp
 done=False
 for mode in ["tool","basic","none"]:
     spec=build(mode)

@@ -50,7 +50,6 @@ for c in CATS:
         (f"w-{c}-nonloy", f"{c.upper()}_NONLOY", f"{LABELS[c]} Non-Loyalty"),
     ]
 wide = {"id": "wide_row", "kind": "table", "name": "Category Totals (single row)",
-        "visibleAsSource": True,
         "source": {"connectionId": CONN, "kind": "sql", "statement": WIDE_SQL},
         "columns": [{"id": cid, "formula": f"[Custom SQL/{sqlcol}]", "name": name} for cid, sqlcol, name in wide_cols],
         "order": [c[0] for c in wide_cols]}
@@ -63,7 +62,6 @@ LONG_SQL = """SELECT * FROM VALUES
   ('QSR','Loyalty',566000),('QSR','Non-Loyalty',271000)
 AS t(CATEGORY, LOYALTY_SEGMENT, PROFIT)"""
 long_tbl = {"id": "cat_long", "kind": "table", "name": "Category x Loyalty (long)",
-            "visibleAsSource": True,
             "source": {"connectionId": CONN, "kind": "sql", "statement": LONG_SQL},
             "columns": [
                 {"id": "l-cat", "formula": "[Custom SQL/CATEGORY]", "name": "Category"},
@@ -113,12 +111,12 @@ tree = {"id": "decomp", "kind": "plugin", "pluginId": PLUGIN_ID,
 
 readout = {"id": "txt-readout", "kind": "text",
            "body": "Drilled into: **{{[drillCategory]}}** _(click a box above; click Total, or its breadcrumb, to clear)_",
-           "verticalAlign": "middle"}
+           "verticalAlign":"center"}
 
 title = {"id": "txt-title", "kind": "text",
          "body": "## Category Decomposition — Big Buys reshaped to Fuel / Merch / LFK / QSR\n"
                  "Total box (the **real, already-registered** Metric Decomposition Tree plugin) next to a native **pivot-table** — same underlying data, two views.",
-         "verticalAlign": "middle"}
+         "verticalAlign":"center"}
 
 pivot = {"id": "pivot", "kind": "pivot-table", "name": "Profit by Category x Loyalty Segment",
          "source": {"elementId": "cat_long", "kind": "table"},
@@ -127,7 +125,7 @@ pivot = {"id": "pivot", "kind": "pivot-table", "name": "Profit by Category x Loy
              {"id": "pv-loy", "formula": "[Category x Loyalty (long)/Loyalty Segment]", "name": "Loyalty Segment"},
              {"id": "pv-profit", "formula": "Sum([Category x Loyalty (long)/Profit])", "name": "Profit", "format": CUR},
          ],
-         "rowsBy": [{"id": "pv-cat"}], "columnsBy": [{"id": "pv-loy"}], "values": ["pv-profit"]}
+         "rowsBy": [{"columnId": "pv-cat"}], "columnsBy": [{"columnId": "pv-loy"}], "values": ["pv-profit"]}
 
 elements = [title, tree, drill_ctrl, readout, pivot, wide, long_tbl]
 

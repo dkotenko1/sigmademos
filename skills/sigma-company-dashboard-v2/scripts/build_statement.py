@@ -364,7 +364,7 @@ y += 712
 
 add(txt("p2-note",
         "Every element, page dimension and margin on this statement is declared in a "
-        "report specification and created with `POST /v2/reports/spec` — nothing was "
+        "report specification and created with `POST /v2/reports` — nothing was "
         "placed by hand in the report builder.",
         B.TEXT_MUTED),
     "p2", MARGIN, y, CW, 54)

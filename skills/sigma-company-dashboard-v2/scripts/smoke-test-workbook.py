@@ -123,7 +123,7 @@ def build_spec(name, folder_id, connection_id, table_path):
             {"id": "container-body", "kind": "container"},
             {"id": "text-title", "kind": "text",
              "body": "## **Retail Overview**\nBuilt from code via "
-                     "`POST /v2/workbooks/spec` — API smoke test."},
+                     "`POST /v2/workbooks` — API smoke test."},
             {"id": "tbl-tx", "kind": "table", "name": tbl,
              "source": {"kind": "warehouse-table",
                         "connectionId": connection_id, "path": table_path},

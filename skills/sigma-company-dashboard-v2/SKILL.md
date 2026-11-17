@@ -15,6 +15,14 @@ description: >-
   for [company]" request.
 ---
 
+> **API update 2026-11-17 (Sigma agent-skills v1.0.0 alignment).** Workbooks and reports are now created with
+> `POST /v2/workbooks` / `POST /v2/reports` (body `{name, folderId, contents}`), validated with `"dryRun": true`,
+> read with `GET …?includeContents=true`, and updated with `PUT …/{id}/contents` (`{contents, documentVersion?}`).
+> The `/spec` paths named below are the legacy endpoints; `scripts/sigmaapi.py` (and the `_wb_body` helper in each
+> example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
+> modal/drawer pages are `contents.overlays[]`; `themeOverrides` is `settings.theme.overrides`.
+
+
 # Sigma Company Dashboard v2 — one config, whole app
 
 This is a full working generator, not a set of instructions to follow from

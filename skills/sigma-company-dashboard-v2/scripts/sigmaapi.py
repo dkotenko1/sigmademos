@@ -7,7 +7,7 @@ handles refresh on the next process.
 
 Two endpoint families have NO CLI coverage as of the sigma-cli build checked
 2026-08-25 (confirmed via `sigma api list-prefixes --refresh-spec`, not a stale
-cache): report-as-code (`/v2/reports/spec`) and plugin registration
+cache): report-as-code (`/v2/reports`) and plugin registration
 (`/v2/plugins`). Those five functions (create_report/update_report/get_report/
 register_plugin/list_plugins) fall back to a direct HTTP call, still sourcing
 their bearer token from `sigma auth token` — see `_raw_call`. Drop this
@@ -162,26 +162,93 @@ except SigmaAuthError as exc:
 # ---------------------------------------------------------------- workbooks
 
 
+def _body(spec, dry_run=False):
+    """Build a /v2/workbooks (or /v2/reports) request body from a builder SPEC.
+
+    Builders still produce the historic ``{"name", "folderId", "document": {...}}``
+    envelope; the content endpoints (official sigma-agent-skills v1.0.0) want the
+    same payload under ``contents``. Accept either key so no builder has to
+    change. ``document``/``contents`` is passed through untouched -- the flat
+    ``elements`` + ``layout`` XML shape is already what the builders emit.
+    """
+    body = {k: v for k, v in spec.items() if k not in ("document", "contents")}
+    contents = spec["contents"] if "contents" in spec else spec["document"]
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body["contents"] = contents
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
+
 def verify_workbook(spec):
-    return _run(["workbooks", "spec", "verify", "--json", _j(spec)],
-                "/v2/workbooks/spec/verify")
+    """Dry-run create (POST /v2/workbooks with dryRun). Nothing is persisted.
+    Returns {"valid": bool, "errors": [...], "warnings": [...]}; raises
+    SigmaAPIError on a 4xx, as the legacy /spec/verify did."""
+    return _raw_call("POST", "/v2/workbooks", _body(spec, dry_run=True))
 
 
 def create_workbook(spec):
-    return _run(["workbooks", "spec", "create", "--json", _j(spec)],
-                "/v2/workbooks/spec")
+    """POST /v2/workbooks with ``contents``. Response carries ``workbookId``.
+    NB: a body without ``contents`` silently creates a BLANK workbook."""
+    return _raw_call("POST", "/v2/workbooks", _body(spec))
 
 
-def update_workbook(workbook_id, spec):
-    return _run(["workbooks", "spec", "update",
-                 "--params", _j({"workbookId": workbook_id}), "--json", _j(spec)],
-                "/v2/workbooks/%s/spec" % workbook_id)
+def update_workbook(workbook_id, spec, document_version=None):
+    """PUT /v2/workbooks/{id}/contents -- contents-only (name/folderId are
+    ignored; rename/move with PUT /v2/files/{id}). Pass ``document_version``
+    for an optimistic-concurrency check, omit for last-write-wins."""
+    body = {"contents": _body(spec)["contents"]}
+    if document_version is not None:
+        body["documentVersion"] = document_version
+    return _raw_call("PUT", "/v2/workbooks/%s/contents" % workbook_id, body)
 
 
 def get_workbook(workbook_id):
-    return _run(["workbooks", "spec", "get",
-                 "--params", _j({"workbookId": workbook_id})],
-                "/v2/workbooks/%s/spec" % workbook_id)
+    """GET /v2/workbooks/{id}?includeContents=true. The legacy ``document`` key
+    is aliased to ``contents`` so older callers keep working."""
+    r = _raw_call("GET", "/v2/workbooks/%s?includeContents=true" % workbook_id)
+    if isinstance(r, dict) and "contents" in r:
+        r.setdefault("document", r["contents"])
+    return r
 
 
 def get_workbook_meta(workbook_id):
@@ -199,7 +266,7 @@ def get_workbook_meta(workbook_id):
 # up — don't widen this into a real generic client.
 
 def call(method, path, body=None, accept="application/json", retry_auth=True):
-    m = re.match(r"^/v2/workbooks/([^/]+)/spec$", path)
+    m = re.match(r"^/v2/workbooks/([^/]+)/(?:spec|contents)$", path)
     if method == "GET" and m:
         return get_workbook(m.group(1))
     if method == "POST" and path == "/v2/workbooks":
@@ -234,7 +301,7 @@ def call(method, path, body=None, accept="application/json", retry_auth=True):
 
 # ------------------------------------------------------------------ reports
 #
-# No CLI coverage — /v2/reports/spec isn't in the CLI's OpenAPI surface at all
+# No CLI coverage — /v2/reports isn't in the CLI's OpenAPI surface at all
 # (checked with --refresh-spec, 2026-08-25). Direct HTTP, CLI-sourced token.
 
 
@@ -260,16 +327,27 @@ def _raw_call(method, path, body=None):
         return raw
 
 
+def verify_report(spec):
+    """Dry-run create (POST /v2/reports with dryRun; ``contents`` required)."""
+    return _raw_call("POST", "/v2/reports", _body(spec, dry_run=True))
+
+
 def create_report(spec):
-    return _raw_call("POST", "/v2/reports/spec", spec)
+    return _raw_call("POST", "/v2/reports", _body(spec))
 
 
-def update_report(report_id, spec):
-    return _raw_call("PUT", "/v2/reports/%s/spec" % report_id, spec)
+def update_report(report_id, spec, document_version=None):
+    body = {"contents": _body(spec)["contents"]}
+    if document_version is not None:
+        body["documentVersion"] = document_version
+    return _raw_call("PUT", "/v2/reports/%s/contents" % report_id, body)
 
 
 def get_report(report_id):
-    return _raw_call("GET", "/v2/reports/%s/spec" % report_id)
+    r = _raw_call("GET", "/v2/reports/%s?includeContents=true" % report_id)
+    if isinstance(r, dict) and "contents" in r:
+        r.setdefault("document", r["contents"])
+    return r
 
 
 # ------------------------------------------------------------------ plugins

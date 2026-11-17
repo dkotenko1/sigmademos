@@ -6,6 +6,54 @@ import sys
 import urllib.error
 import urllib.request
 
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 # Usage:
 #   python3 build_honda_ev_allocation.py                      # print the spec only
 #   python3 build_honda_ev_allocation.py <BASE> <TOKEN> <CONNECTION_ID> <FOLDER_ID>
@@ -196,7 +244,7 @@ JOIN plant_factor pf ON pf.plant = a.plant
 
 
 def sql_table(eid, name, statement, cols, **extra):
-    el = {"id": eid, "kind": "table", "name": name, "visibleAsSource": True,
+    el = {"id": eid, "kind": "table", "name": name, 
           "source": {"kind": "sql", "connectionId": CONN, "statement": statement},
           "columns": cols, "tableComponents": {"summaryBar": "hidden"},
           "tableStyle": {"preset": "presentation", "cellSpacing": "medium",
@@ -347,8 +395,7 @@ add({"id": "tbl-load", "kind": "table", "name": "Plant Month Load",
           "formula": '[Cell Status] = "Within contract"',
           "style": {"backgroundColor": "#E9F5F1", "color": GOOD}},
      ],
-     "tableStyle": {"preset": "presentation", "cellSpacing": "small"},
-     "visibleAsSource": True})
+     "tableStyle": {"preset": "presentation", "cellSpacing": "small"}})
 
 # --------------------------------------------------------------- KPIs
 def kpi(eid, label, source, formula, fmt, comparison=None, comp_formula=None,
@@ -926,7 +973,7 @@ add({
     "tabBar": {
         "visibility": "shown",
         "style": "button",
-        "alignment": "end",
+        "alignment": "right",
         "size": "small",
     },
     "spacing": "small",
@@ -1200,10 +1247,10 @@ if __name__ == "__main__":
     if not HAS_PULSE:
         print("note: building without the Allocation Pulse plugin "
               "(set HONDA_PULSE_PLUGIN_ID to include it).")
-    status, result = call("POST", "/v2/workbooks/spec/verify", body)
+    status, result = call("POST", "/v2/workbooks", _wb_body(body, dry_run=True))
     print("verify", status, result)
     if status >= 400 or not (isinstance(result, dict) and result.get("valid")):
         raise SystemExit(1)
-    status, result = call("POST", "/v2/workbooks/spec", body)
+    status, result = call("POST", "/v2/workbooks", _wb_body(body))
     print("create", status, result)
     raise SystemExit(0 if status < 400 else 1)

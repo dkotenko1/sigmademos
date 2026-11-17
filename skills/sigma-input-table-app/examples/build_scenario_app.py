@@ -1,15 +1,67 @@
+# LEGACY EXAMPLE (checked 2026-11-17): the POST now goes to /v2/workbooks with `contents`, but this
+# file still emits the pre-2026-08 layout XML dialect (<LayoutElement>/<GridContainer>) and the live API
+# rejects it ("unknown element ... expected Element, Container, or TabbedContainer"). Treat it as a
+# reference for element shapes only; for a working build use sigma-company-dashboard-v2/scripts/build_sofi.py.
 import json,sys,urllib.request
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE,TOKEN,CONN,FOLDER=sys.argv[1:5]
 H={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"}
 CUR={"kind":"number","formatString":"$.3~s","currencySymbol":"$","decimalSymbol":".","digitGroupingSymbol":",","digitGroupingSize":[3]}
 CARD={"backgroundColor":"#FFFFFF","borderColor":"#DfE6EE","borderWidth":1,"borderRadius":"round"}
 NAVY="#0A1F3B"; TEAL="#14B8A6"; RED="#EF4444"
-weekly={"id":"weekly","kind":"table","name":"Weekly","visibleAsSource":True,
+weekly={"id":"weekly","kind":"table","name":"Weekly",
  "source":{"connectionId":CONN,"kind":"sql","statement":"SELECT DATE_TRUNC('week',DATE)::date AS WEEK, SUM(QUANTITY*PRICE) AS ACTUAL, ROUND(SUM(QUANTITY*PRICE)*1.10) AS TARGET, ROUND(SUM(QUANTITY*PRICE)*1.02) AS STAT FROM SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS WHERE DATE >= DATEADD('year',-1,(SELECT MAX(DATE) FROM SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS)) GROUP BY 1 ORDER BY 1"},
  "columns":[{"id":"w-week","formula":"[Custom SQL/WEEK]","name":"Week"},{"id":"w-act","formula":"[Custom SQL/ACTUAL]","name":"Actual","format":CUR},{"id":"w-tgt","formula":"[Custom SQL/TARGET]","name":"Target","format":CUR},{"id":"w-stat","formula":"[Custom SQL/STAT]","name":"Stat","format":CUR}],"order":["w-week","w-act","w-tgt","w-stat"]}
 scenarios={"id":"scenarios","kind":"input-table","source":{"kind":"empty","connectionId":CONN},"inputMode":"edit","name":"Scenarios",
  "columns":[{"id":"s-name","type":"text","name":"Forecast Name"},{"id":"s-status","type":"text","name":"Status","values":["Draft","Reviewed","Published"],"pills":"color-by-option"}]}
-cross={"id":"cross","kind":"table","name":"Cross Join","visibleAsSource":True,
+cross={"id":"cross","kind":"table","name":"Cross Join",
  "source":{"kind":"join","joins":[{"left":{"elementId":"scenarios","kind":"table"},"right":{"elementId":"weekly","kind":"table"},"columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"scenarios","kind":"table"}},
  "columns":[{"id":"cj-name","formula":"[Scenarios/Forecast Name]","name":"Forecast Name"},{"id":"cj-week","formula":"[Weekly/Week]","name":"Week"},{"id":"cj-act","formula":"[Weekly/Actual]","name":"Actual","format":CUR},{"id":"cj-tgt","formula":"[Weekly/Target]","name":"Target","format":CUR},{"id":"cj-stat","formula":"[Weekly/Stat]","name":"Stat","format":CUR}],
  "order":["cj-name","cj-week","cj-act","cj-tgt","cj-stat"]}
@@ -23,9 +75,9 @@ forecast={"id":"forecast","kind":"input-table","source":{"kind":"linked","from":
 def card(i,title,formula,deltaf,x0,x1):
     cid=f"c{i}"; k=f"k{i}"
     cont={"id":cid,"kind":"container","style":dict(CARD)}
-    t={"id":f"t{i}","kind":"text","body":f"**{title}**","verticalAlign":"middle"}
-    kp={"id":k,"kind":"kpi-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":k+"v","formula":formula,"name":title,"format":CUR}],"value":{"columnId":k+"v","color":NAVY},"name":{"visibility":"hidden"},"layout":{"anchor":"middle"}}
-    dl={"id":f"d{i}","kind":"text","body":deltaf,"verticalAlign":"middle"}
+    t={"id":f"t{i}","kind":"text","body":f"**{title}**","verticalAlign":"center"}
+    kp={"id":k,"kind":"kpi-chart","source":{"elementId":"forecast","kind":"table"},"columns":[{"id":k+"v","formula":formula,"name":title,"format":CUR}],"value":{"columnId":k+"v","color":NAVY},"name":{"visibility":"hidden"},"layout":{"anchor":"center"}}
+    dl={"id":f"d{i}","kind":"text","body":deltaf,"verticalAlign":"center"}
     lay=f'<GridContainer elementId="{cid}" type="grid" gridColumn="{x0} / {x1}" gridRow="5 / 15" gridTemplateColumns="repeat(12,1fr)" gridTemplateRows="auto"><LayoutElement elementId="t{i}" gridColumn="1 / 13" gridRow="1 / 3"/><LayoutElement elementId="{k}" gridColumn="1 / 13" gridRow="3 / 9"/><LayoutElement elementId="d{i}" gridColumn="1 / 13" gridRow="9 / 11"/></GridContainer>'
     return [cont,t,kp,dl],lay
 delta='{{ "vs Target  " & Text(Round((Sum([Forecast/Forecast])-Sum([Forecast/Target]))/1000000,1)) & "M" }}'
@@ -38,12 +90,12 @@ chart={"id":"chart","kind":"line-chart","source":{"elementId":"forecast","kind":
  "xAxis":{"columnId":"ch-w"},"yAxis":{"columnIds":["ch-t","ch-a","ch-f"]},"name":{"text":"Target · Actuals · Forecast by Week","fontWeight":"bold","fontSize":14}}
 # dark toolbar
 tb={"id":"tb","kind":"container","style":{"backgroundColor":NAVY,"borderRadius":"round"}}
-tblabel={"id":"tblabel","kind":"text","body":'{{ "Scenario Modeler   |   " & CurrentUserEmail() }}',"verticalAlign":"middle"}
+tblabel={"id":"tblabel","kind":"text","body":'{{ "Scenario Modeler   |   " & CurrentUserEmail() }}',"verticalAlign":"center"}
 newbtn={"id":"newbtn","kind":"button","text":"Create Forecast","appearance":"outline","actions":[{"id":"o1","trigger":"on-click","effects":[{"effect":"clear-control","scope":{"type":"control","controlId":"newScenarioName"}},{"effect":"open-overlay","overlayId":"createModal"}]}]}
 selctrl={"kind":"control","controlId":"scenarioSelect","id":"ctrl-sel","name":"Forecast","controlType":"list","selectionMode":"single","mode":"include","filters":[{"source":{"kind":"table","elementId":"cross"},"columnId":"cj-name"}],"source":{"kind":"source","source":{"kind":"table","elementId":"cross"},"columnId":"cj-name"}}
-hdr={"id":"hdr","kind":"text","body":"# Demand Planning — Scenario Modeler","verticalAlign":"middle"}
+hdr={"id":"hdr","kind":"text","body":"# Demand Planning — Scenario Modeler","verticalAlign":"center"}
 # modal
-mtitle={"id":"mtitle","kind":"text","body":"### Create Forecast\nName your scenario, then Create.","verticalAlign":"middle"}
+mtitle={"id":"mtitle","kind":"text","body":"### Create Forecast\nName your scenario, then Create.","verticalAlign":"center"}
 namectrl={"kind":"control","controlId":"newScenarioName","id":"ctrl-name","name":"Forecast Name","controlType":"text","mode":"equals","case":"insensitive","includeNulls":"when-no-value-is-selected","showOperators":False}
 createbtn={"id":"createbtn","kind":"button","text":"Create","appearance":"filled","actions":[{"id":"c1","trigger":"on-click","effects":[
     {"effect":"insert-rows","tableElementId":"scenarios","values":{"s-name":{"type":"control","control":"newScenarioName"},"s-status":{"type":"constant","value":{"type":"text","value":"Draft"}}}},
@@ -64,11 +116,11 @@ mo=pg("createModal",'<LayoutElement elementId="mtitle" gridColumn="1 / 25" gridR
 spec={"name":"Scenario Modeler — Styled v2","folderId":FOLDER,"schemaVersion":1,"pages":[model_page,data_page,modal],"layout":'<?xml version="1.0" encoding="utf-8"?>\n'+ml+dl+mo,
  # colorOverrides:[] TEMP workaround for a live regression, see schema-2026-08-breaking-changes.md
  "themeOverrides":{"colors":{"text":"#0F2138","highlight":TEAL},"colorOverrides":[],"categoricalScheme":["#0A1F3B","#14B8A6","#EF4444","#64748B"],"fonts":{"textFont":"Inter","dataFont":"Inter"},"pageWidth":"full"}}
-r=urllib.request.Request(BASE+"/v2/workbooks/spec",data=json.dumps(spec).encode(),headers=H,method="POST")
+r=urllib.request.Request(BASE+"/v2/workbooks",data=json.dumps(_wb_body(spec)).encode(),headers=H,method="POST")
 try:
     resp=urllib.request.urlopen(r,timeout=90).read().decode()
-    print("POST:", "ACCEPTED" if "success: true" in resp else resp[:400])
-    wid=[l.split()[-1] for l in resp.splitlines() if "workbookId" in l]
+    print("POST:", "ACCEPTED" if "workbookId" in resp else resp[:400])
+    wid=__import__("re").findall(r'"?workbookId"?:\s*"?([\w-]+)', resp)
     if wid: print("URL:", json.loads(urllib.request.urlopen(urllib.request.Request(BASE+f"/v2/workbooks/{wid[0]}",headers=H),timeout=30).read().decode()).get("url"))
 except urllib.error.HTTPError as e:
     print("HTTP",e.code,":",json.loads(e.read().decode()).get("message","")[:400])

@@ -14,6 +14,54 @@
 # whole spec 1:1.
 import json, os, sys, urllib.request, urllib.error
 
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE, TOKEN, CONN, FOLDER = sys.argv[1:5]
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
@@ -64,7 +112,7 @@ elements = [
         "body": "<span style=\"font-size: 18px\">**Demand Planning — lightweight rebuild.** "
         "One-shot recreation of the core scenario-modeling mechanic: actuals vs. "
         "statistical forecast vs. an editable demand plan.</span>",
-        "verticalAlign": "middle",
+        "verticalAlign":"center",
     },
     # 1. Base — one row per month, straight off a synthetic SQL source.
     #    ⚠ TWO gotchas live in this one element:
@@ -89,7 +137,6 @@ elements = [
         "kind": "table",
         "source": {"connectionId": CONN, "statement": SQL, "kind": "sql"},
         "name": "Demand Source",
-        "visibleAsSource": True,
         "columns": [
             {"id": "c_relmonth", "formula": "[Custom SQL/relative_month]", "name": "RelMonth"},
             {"id": "c_month", "formula": "[Custom SQL/month_start]", "name": "MonthStart"},
@@ -142,7 +189,6 @@ elements = [
         "kind": "table",
         "source": {"elementId": "assum3", "kind": "table"},
         "name": "Book",
-        "visibleAsSource": True,
         "columns": [
             {"id": "bk-relmonth", "formula": "[Assumptions/RelMonth]", "name": "relmonth"},
             {"id": "bk-month", "formula": "[Assumptions/MonthStart]", "name": "monthdt"},
@@ -304,6 +350,6 @@ body = {
     },
 }
 
-status, text = call(f"{BASE}/v2/workbooks/spec", body)
+status, text = call(f"{BASE}/v2/workbooks", _wb_body(body))
 print(status)
 print(text[:4000])

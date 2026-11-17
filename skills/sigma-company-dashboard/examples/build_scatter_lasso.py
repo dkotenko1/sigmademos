@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# LEGACY EXAMPLE (checked 2026-11-17): the POST now goes to /v2/workbooks with `contents`, but this
+# file still emits the pre-2026-08 layout XML dialect (<LayoutElement>/<GridContainer>) and the live API
+# rejects it ("unknown element ... expected Element, Container, or TabbedContainer"). Treat it as a
+# reference for element shapes only; for a working build use sigma-company-dashboard-v2/scripts/build_sofi.py.
 """Build/update the 'Scatter Lasso Select — Plugin Demo' workbook.
 
 Reference example: a custom canvas-scatterplot plugin (100K points, rectangle-
@@ -14,8 +18,8 @@ Usage:
   eval "$(bash scripts/get-token-staging.sh)"   # sets SIGMA_API_TOKEN, run from millersigma/
   python3 build_scatter_lasso.py [--no-variable-binding]
 
-First run should POST to /v2/workbooks/spec (new workbook); subsequent edits
-should PUT to /v2/workbooks/{urlId}/spec (in place) — see sigma-code-rep-
+First run should POST to /v2/workbooks (new workbook, body under `contents`); subsequent edits
+should PUT to /v2/workbooks/{id}/contents (in place, `{contents: ...}` only) — see sigma-code-rep-
 interactivity memory / this file's own history for the pattern.
 """
 import json, os, sys, urllib.request, urllib.error
@@ -66,8 +70,7 @@ def spec(include_var_binding=True):
         "name": SRC_NAME,
         "source": {"connectionId": CONNECTION_ID, "statement": SQL, "kind": "sql"},
         "columns": src_cols,
-        "order": [c["id"] for c in src_cols],
-        "visibleAsSource": False,
+        "order": [c["id"] for c in src_cols], 
     }
 
     filtered_cols = [
@@ -124,13 +127,13 @@ def spec(include_var_binding=True):
         "id": "titleText",
         "kind": "text",
         "body": "### Scatter Lasso Select — Plugin Demo",
-        "verticalAlign": "middle",
+        "verticalAlign":"center",
     }
     caption = {
         "id": "captionText",
         "kind": "text",
         "body": "Drag a rectangle on the scatterplot to select customers. The selected segment(s) filter the table below via the **Segment Filter** control (top right) — try it manually too.",
-        "verticalAlign": "middle",
+        "verticalAlign":"center",
     }
 
     page1_elements = [title, control, caption, plugin_el, filtered_table]
@@ -165,6 +168,13 @@ def spec(include_var_binding=True):
     }
 
 
+def _contents(body):
+    """Legacy /spec body -> the `contents` payload (drop outer name/folderId)."""
+    if "document" in body:
+        return body["document"]
+    return {k: v for k, v in body.items() if k not in ("name", "folderId", "description")}
+
+
 def call(method, url, body):
     req = urllib.request.Request(
         url,
@@ -177,7 +187,7 @@ def call(method, url, body):
     try:
         res = urllib.request.urlopen(req, timeout=60)
         raw = res.read().decode()
-        # POST/PUT .../spec returns YAML, not JSON — don't let a JSONDecodeError
+        # POST/PUT may return YAML or JSON — don't let a JSONDecodeError
         # on a SUCCESSFUL call look like a crash (it'll trick you into re-POSTing
         # and creating a duplicate workbook).
         try:
@@ -192,11 +202,12 @@ if __name__ == "__main__":
     no_var = "--no-variable-binding" in sys.argv
     body = spec(include_var_binding=not no_var)
     if WORKBOOK_URL_ID:
-        url = f"{BASE.rstrip('/')}/v2/workbooks/{WORKBOOK_URL_ID}/spec"
-        ok, result = call("PUT", url, body)
+        url = f"{BASE.rstrip('/')}/v2/workbooks/{WORKBOOK_URL_ID}/contents"
+        ok, result = call("PUT", url, {"contents": _contents(body)})
     else:
-        url = f"{BASE.rstrip('/')}/v2/workbooks/spec"
-        ok, result = call("POST", url, body)
+        url = f"{BASE.rstrip('/')}/v2/workbooks"
+        meta = {k: body[k] for k in ("name", "folderId", "description") if k in body}
+        ok, result = call("POST", url, dict(meta, contents=_contents(body)))
     if ok:
         print(json.dumps(result, indent=2) if isinstance(result, dict) else result)
     else:

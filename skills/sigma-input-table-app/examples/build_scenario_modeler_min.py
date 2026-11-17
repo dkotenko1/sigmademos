@@ -1,4 +1,56 @@
+# LEGACY EXAMPLE (checked 2026-11-17): the POST now goes to /v2/workbooks with `contents`, but this
+# file still emits the pre-2026-08 layout XML dialect (<LayoutElement>/<GridContainer>) and the live API
+# rejects it ("unknown element ... expected Element, Container, or TabbedContainer"). Treat it as a
+# reference for element shapes only; for a working build use sigma-company-dashboard-v2/scripts/build_sofi.py.
 import json,sys,base64,urllib.request
+
+
+def _wb_body(spec, dry_run=False):
+    """Map a legacy /spec body onto POST /v2/workbooks: the document (either the
+    ``document`` key or the flat top-level schemaVersion/pages/layout form)
+    moves under ``contents``; ``dryRun`` replaces /spec/verify."""
+    meta = {k: spec[k] for k in ("name", "folderId", "description") if k in spec}
+    if "document" in spec:
+        contents = spec["document"]
+    elif "contents" in spec:
+        contents = spec["contents"]
+    else:
+        contents = {k: v for k, v in spec.items() if k not in meta}
+    contents = dict(contents)
+    contents.setdefault("schemaVersion", 1)
+    contents.setdefault("kind", "workbook")
+    if "themeOverrides" in contents or "themeName" in contents:
+        contents = dict(contents)  # themeName/themeOverrides -> settings.theme
+        theme = {}
+        if "themeName" in contents:
+            theme["name"] = contents.pop("themeName")
+        if "themeOverrides" in contents:
+            theme["overrides"] = contents.pop("themeOverrides")
+        settings = dict(contents.get("settings", {}))
+        settings["theme"] = dict(settings.get("theme", {}), **theme)
+        contents["settings"] = settings
+    # Elements are no longer nested in pages: hoist any legacy pages[].elements
+    # into the flat contents.elements array (layout XML carries placement).
+    if any("elements" in p for p in contents.get("pages", [])):
+        contents = dict(contents)
+        flat = list(contents.get("elements", []))
+        pages = []
+        for p in contents["pages"]:
+            p = dict(p)
+            flat += p.pop("elements", [])
+            pages.append(p)
+        overlays = list(contents.get("overlays", []))
+        keep = []
+        for p in pages:  # legacy modal/drawer "pages" are overlays now
+            (overlays if p.get("type") in ("modal", "drawer") else keep).append(p)
+        contents["elements"], contents["pages"] = flat, keep
+        if overlays:
+            contents["overlays"] = overlays
+    body = dict(meta, contents=contents)
+    if dry_run:
+        body["dryRun"] = True
+    return body
+
 BASE,TOKEN,CONN,FOLDER=sys.argv[1:5]
 H={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"}
 def b64(s): return base64.b64encode(s.encode()).decode()
@@ -10,18 +62,18 @@ def timg(txt,sz=24,col="#FFFFFF",w=800,anchor="middle",x=160):
     return "data:image/svg+xml;base64,"+b64(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 44" preserveAspectRatio="xMidYMid meet"><text x="{x}" y="31" text-anchor="{a}" font-family="Arial,Helvetica,sans-serif" font-weight="{w}" font-size="{sz}" fill="{col}">{txt}</text></svg>')
 
 # ---------- VERIFIED v4 foundation ----------
-base={"id":"base","kind":"table","name":"Custom SQL Base","visibleAsSource":True,
+base={"id":"base","kind":"table","name":"Custom SQL Base",
  "source":{"connectionId":CONN,"kind":"sql","statement":"SELECT PRODUCT_FAMILY, QUANTITY*PRICE AS REVENUE FROM SE_DEMO_DB.BIG_BUYS.BIG_BUYS_POS"},
  "columns":[{"id":"b-fam","formula":"[Custom SQL/PRODUCT_FAMILY]","name":"Product Family"},{"id":"b-rev","formula":"[Custom SQL/REVENUE]","name":"Revenue","format":CUR}],"order":["b-fam","b-rev"]}
 scen={"id":"scenarios","kind":"input-table","source":{"kind":"empty","connectionId":CONN},"inputMode":"edit","name":"Scenario Names",
  "columns":[{"id":"sc-name","type":"text","name":"Scenario Name"},
             {"id":"sc-status","type":"text","name":"Status","values":["Draft","Submitted","Approved"],"pills":"color-by-option"}]}
-pivot={"id":"pivot","kind":"pivot-table","name":"Pivot","visibleAsSource":True,
+pivot={"id":"pivot","kind":"pivot-table","name":"Pivot",
  "source":{"kind":"join","joins":[{"left":{"elementId":"base","kind":"table"},"right":{"elementId":"scenarios","kind":"table"},"columns":[{"left":"1","right":"1"}],"joinType":"left-outer"}],"primarySource":{"elementId":"base","kind":"table"}},
  "columns":[{"id":"pv-fam","formula":"[Custom SQL Base/Product Family]","name":"Product Family"},
             {"id":"pv-scen","formula":"[Scenario Names/Scenario Name]","name":"Scenario"},
             {"id":"pv-rev","formula":"Sum([Custom SQL Base/Revenue])","name":"Revenue","format":CUR}],
- "rowsBy":[{"id":"pv-fam"}],"values":["pv-rev"]}
+ "rowsBy":[{"columnId":"pv-fam"}],"values":["pv-rev"]}
 # linked input table: keys + pulled baseline + editable forecast + row-level Δ + comments
 forecast={"id":"forecast","kind":"input-table","source":{"kind":"linked","from":"pivot"},"inputMode":"edit","name":"Forecast Entry",
  "columns":[{"id":"lk-fam","key":"pv-fam"},
@@ -33,7 +85,7 @@ forecast={"id":"forecast","kind":"input-table","source":{"kind":"linked","from":
  "order":["lk-fam","lk-scen","lk-base","lk-fc","lk-var","lk-com"]}
 EFF='Coalesce([Forecast Entry/Forecast Revenue],[Forecast Entry/Revenue])'
 # derived NORMAL table -> controls can filter this (not the input table)
-detail={"id":"detail","kind":"table","name":"Detail","visibleAsSource":True,
+detail={"id":"detail","kind":"table","name":"Detail",
  "source":{"elementId":"forecast","kind":"table"},
  "columns":[{"id":"d-fam","formula":"[Forecast Entry/Product Family]","name":"Product Family"},
             {"id":"d-scen","formula":"[Forecast Entry/Scenario]","name":"Scenario"},
@@ -56,16 +108,16 @@ DCUR={"kind":"number","formatString":"+$.3~s","currencySymbol":"$","decimalSymbo
 BASELINE='Sum([Detail/Baseline])'; FCAST='Sum([Detail/Forecast])'
 def card(idp,title,mainf,mainfmt,deltaf=None,deltafmt=DCUR,deltalabel="vs Baseline"):
     cont={"id":f"c-{idp}","kind":"container","style":dict(CARD)}
-    t={"id":f"t-{idp}","kind":"text","body":f"**{title}**","verticalAlign":"middle","style":{"color":"#5B6B7B"}}
+    t={"id":f"t-{idp}","kind":"text","body":f"**{title}**","verticalAlign":"center","style":{"color":"#5B6B7B"}}
     v={"id":f"v-{idp}","kind":"kpi-chart","source":{"elementId":"detail","kind":"table"},
        "columns":[{"id":f"{idp}mv","formula":mainf,"name":title,"format":mainfmt}],
-       "value":{"columnId":f"{idp}mv","fontSize":34},"name":{"visibility":"hidden"},"layout":{"anchor":"middle"},"style":{"backgroundColor":"transparent","padding":"none"}}
+       "value":{"columnId":f"{idp}mv","fontSize":34},"name":{"visibility":"hidden"},"layout":{"anchor":"center"},"style":{"backgroundColor":"transparent","padding":"none"}}
     els=[cont,t,v]; rows=[f'<LayoutElement elementId="t-{idp}" gridColumn="1 / 13" gridRow="1 / 3"/>',
                           f'<LayoutElement elementId="v-{idp}" gridColumn="1 / 13" gridRow="3 / 7"/>']
     if deltaf:
         d={"id":f"d-{idp}","kind":"kpi-chart","source":{"elementId":"detail","kind":"table"},
            "columns":[{"id":f"{idp}dv","formula":deltaf,"name":deltalabel,"format":deltafmt}],
-           "value":{"columnId":f"{idp}dv","fontSize":15,"color":GOOD},"name":{"text":deltalabel,"fontSize":12},"layout":{"anchor":"middle"},"style":{"backgroundColor":"transparent","padding":"none"}}
+           "value":{"columnId":f"{idp}dv","fontSize":15,"color":GOOD},"name":{"text":deltalabel,"fontSize":12},"layout":{"anchor":"center"},"style":{"backgroundColor":"transparent","padding":"none"}}
         els.append(d); rows.append(f'<LayoutElement elementId="d-{idp}" gridColumn="1 / 13" gridRow="7 / 9"/>')
     lay=f'  <GridContainer elementId="c-{idp}" type="grid" gridColumn="{{col}}" gridRow="4 / 13" gridTemplateColumns="repeat(12, 1fr)" gridTemplateRows="auto">\n    '+"\n    ".join(rows)+"\n  </GridContainer>"
     return els,lay
@@ -91,7 +143,7 @@ barchart={"id":"bar","kind":"bar-chart","source":{"elementId":"detail","kind":"t
  "legend":{"visibility":"visible"},"name":{"text":"Baseline vs Forecast by Product Family","fontWeight":"bold","fontSize":14},"style":dict(CARD)}
 
 # ---------- create modal ----------
-mtitle={"id":"mtitle","kind":"text","body":"### New forecast scenario\nName it, then Create — it copies the baseline for every product family.","verticalAlign":"middle"}
+mtitle={"id":"mtitle","kind":"text","body":"### New forecast scenario\nName it, then Create — it copies the baseline for every product family.","verticalAlign":"center"}
 namectrl={"kind":"control","controlId":"newScenarioName","id":"ctrl-name","name":"Scenario Name","controlType":"text","mode":"equals","case":"insensitive","includeNulls":"when-no-value-is-selected","showOperators":False}
 createbtn={"id":"createbtn","kind":"button","text":"Create","appearance":"filled","actions":[{"id":"c1","trigger":"on-click","effects":[
     {"effect":"insert-rows","tableElementId":"scenarios","values":{"sc-name":{"type":"control","control":"newScenarioName"},"sc-status":{"type":"constant","value":{"type":"text","value":"Draft"}}}},
@@ -121,11 +173,11 @@ theme={"colors":{"text":"#0F2138","highlight":"#0D9488","success":GOOD,"warning"
  "fonts":{"textFont":"Inter","dataFont":"Inter"},"pageWidth":"full","tableStyles":{"preset":"presentation","cellSpacing":"small"}}
 spec={"name":"Scenario Modeler — Demand Planning (v2)","folderId":FOLDER,"schemaVersion":1,"pages":[model_page,data_page,modal],
  "layout":'<?xml version="1.0" encoding="utf-8"?>\n'+ml+dl+mo,"themeOverrides":theme}
-r=urllib.request.Request(BASE+"/v2/workbooks/spec",data=json.dumps(spec).encode(),headers=H,method="POST")
+r=urllib.request.Request(BASE+"/v2/workbooks",data=json.dumps(_wb_body(spec)).encode(),headers=H,method="POST")
 try:
     resp=urllib.request.urlopen(r,timeout=90).read().decode()
-    print("POST:", "ACCEPTED" if "success: true" in resp else resp[:500])
-    wid=[l.split()[-1] for l in resp.splitlines() if "workbookId" in l]
+    print("POST:", "ACCEPTED" if "workbookId" in resp else resp[:500])
+    wid=__import__("re").findall(r'"?workbookId"?:\s*"?([\w-]+)', resp)
     if wid: print("URL:", json.loads(urllib.request.urlopen(urllib.request.Request(BASE+f"/v2/workbooks/{wid[0]}",headers=H),timeout=30).read().decode()).get("url"))
 except urllib.error.HTTPError as e:
     print("HTTP",e.code,":",json.loads(e.read().decode()).get("message","")[:500])

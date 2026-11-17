@@ -69,7 +69,6 @@ LONG_SQL = """SELECT * FROM VALUES
 AS t(CATEGORY, LOYALTY_SEGMENT, PROFIT)"""
 
 wide = {"id": "cat_wide", "kind": "table", "name": "Category Decomposition (wide)",
-        "visibleAsSource": True,
         "source": {"connectionId": CONN, "kind": "sql", "statement": WIDE_SQL},
         "columns": [
             {"id": "w-cat", "formula": "[Custom SQL/CATEGORY]", "name": "Category"},
@@ -81,7 +80,6 @@ wide = {"id": "cat_wide", "kind": "table", "name": "Category Decomposition (wide
         "order": ["w-cat", "w-profit", "w-prior", "w-loy", "w-nonloy"]}
 
 long_tbl = {"id": "cat_long", "kind": "table", "name": "Category x Loyalty (long)",
-            "visibleAsSource": True,
             "source": {"connectionId": CONN, "kind": "sql", "statement": LONG_SQL},
             "columns": [
                 {"id": "l-cat", "formula": "[Custom SQL/CATEGORY]", "name": "Category"},
@@ -114,16 +112,16 @@ pivot = {"id": "pivot", "kind": "pivot-table", "name": "Profit by Category x Loy
              {"id": "pv-loy", "formula": "[Category x Loyalty (long)/Loyalty Segment]", "name": "Loyalty Segment"},
              {"id": "pv-profit", "formula": "Sum([Category x Loyalty (long)/Profit])", "name": "Profit", "format": CUR},
          ],
-         "rowsBy": [{"id": "pv-cat"}], "columnsBy": [{"id": "pv-loy"}], "values": ["pv-profit"]}
+         "rowsBy": [{"columnId": "pv-cat"}], "columnsBy": [{"columnId": "pv-loy"}], "values": ["pv-profit"]}
 
 readout = {"id": "txt-readout", "kind": "text",
            "body": "Drilled into: **{{[drillCategory]}}** _(click a box above; click it again, or the Total box, to clear)_",
-           "verticalAlign": "middle"}
+           "verticalAlign":"center"}
 
 title = {"id": "txt-title", "kind": "text",
          "body": "## Category Decomposition — Big Buys reshaped to Fuel / Merch / LFK / QSR\n"
                  "Total box (native decomposition-tree **plugin**, click any box to drill) next to a native **pivot-table** — same underlying data, two views.",
-         "verticalAlign": "middle"}
+         "verticalAlign":"center"}
 
 elements = [title, tree, drill_ctrl, readout, pivot, wide, long_tbl]
 

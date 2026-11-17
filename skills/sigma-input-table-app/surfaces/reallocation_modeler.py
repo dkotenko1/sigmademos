@@ -76,7 +76,7 @@ def build(
         {"id": f"{p}-sb-cap", "formula": "[Custom SQL/CAPACITY_UNITS]", "name": "Capacity"},
     ]
     base = {
-        "id": base_id, "kind": "table", "name": "Reallocation Base", "visibleAsSource": True,
+        "id": base_id, "kind": "table", "name": "Reallocation Base", 
         "source": {"connectionId": connection_id, "kind": "sql", "statement": baseline_sql},
         "columns": base_columns,
     }
@@ -126,7 +126,7 @@ def build(
          "name": f"Effective {measure_label}"},
     ]
     book = {
-        "id": book_id, "kind": "table", "name": "Book", "visibleAsSource": True,
+        "id": book_id, "kind": "table", "name": "Book", 
         "source": {"elementId": assum_id, "kind": "table"},
         "columns": book_cols,
     }
