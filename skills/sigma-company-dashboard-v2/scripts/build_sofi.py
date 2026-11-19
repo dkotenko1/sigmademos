@@ -45,8 +45,8 @@ PRODUCT_NAMES = ", ".join(p[0] for p in CFG["products"])
 B.apply(CFG)
 import sigmaapi as S
 
-SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
-SPECS = pathlib.Path(__file__).resolve().parent.parent / "specs"
+SQL = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "sql"
+SPECS = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "specs"
 # a fresh git clone has no specs/ (it is gitignored, per-session output) --
 # a genuinely new SE hit FileNotFoundError here on the very first cold
 # clone-and-build test. Create it once, here, rather than at every write site.
@@ -850,7 +850,8 @@ def _pri(col, fn="SumIf"):
     return '%s([%s/%s], [%s/Period Name] = "Prior Period")' % (fn, LB, col, LB)
 
 
-# Deterministic, live-data takeaway. Used when CFG["insight_mode"] == "formula":
+# Deterministic, live-data takeaway. DEFAULT (insight_mode unset or "formula"); set
+# CFG["insight_mode"] = "ai" to opt back in to the CallText/Cortex tile.
 # Snowflake Cortex CallText returned N/A for EVERY model/function variant on the
 # paperbricks Sigma Sample Database connection (probed 2026-10-14), so the LLM
 # insight is replaced by a formula sentence that always resolves.
@@ -866,7 +867,7 @@ _FORMULA_INSIGHT = (
     'Text(Round(' + _pri("Delinquency Rate", "AvgIf") + ' * 100, 1)) & "% prior."'
 )
 
-if CFG.get("insight_mode") == "formula":
+if CFG.get("insight_mode", "formula") == "formula":
     _INSIGHT_BODY = '**KEY TAKEAWAY** — {{' + _FORMULA_INSIGHT + '}}'
 else:
     _INSIGHT_BODY = ('**AI INSIGHT** — {{Replace(CallText("SNOWFLAKE.CORTEX.COMPLETE", '
@@ -2325,6 +2326,11 @@ def _check_not_edited_since_last_push(workbook_id):
               % (live_version, last_known))
 
 
+# NO_STATE=1 -> build a copy / update a workbook that is NOT the tracked one:
+# skips the overwrite guard and leaves specs/workbook_id.txt + wb_state_*.json alone.
+NO_STATE = os.environ.get("NO_STATE") == "1"
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "verify"
     if action == "verify":
@@ -2342,15 +2348,23 @@ def main():
     elif action == "create":
         r = S.create_workbook(SPEC)
         print("✅ created", r["workbookId"])
-        (SPECS / "workbook_id.txt").write_text(r["workbookId"])
-        meta = S.get_workbook_meta(r["workbookId"])
-        _save_state(r["workbookId"], meta.get("latestVersion", 1))
+        if NO_STATE:
+            # A throwaway/side-by-side copy: never touch the tracked workbook id
+            # or the edited-in-UI guard state of the real workbook.
+            (SPECS / ("workbook_id_copy_%s.txt" % CFG["key"])).write_text(r["workbookId"])
+            print("   NO_STATE=1: tracked workbook id/state left untouched")
+        else:
+            (SPECS / "workbook_id.txt").write_text(r["workbookId"])
+            meta = S.get_workbook_meta(r["workbookId"])
+            _save_state(r["workbookId"], meta.get("latestVersion", 1))
     elif action == "update":
         workbook_id = sys.argv[2]
-        _check_not_edited_since_last_push(workbook_id)
+        if not NO_STATE:
+            _check_not_edited_since_last_push(workbook_id)
         S.update_workbook(workbook_id, SPEC)
         meta = S.get_workbook_meta(workbook_id)
-        _save_state(workbook_id, meta.get("latestVersion"))
+        if not NO_STATE:
+            _save_state(workbook_id, meta.get("latestVersion"))
         print("✅ updated", workbook_id, "(now v%d)" % meta.get("latestVersion", 0))
 
 

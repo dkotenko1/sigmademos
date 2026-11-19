@@ -4,9 +4,10 @@
 
 import base64
 import colorsys
+import os
 import pathlib
 
-ASSETS = pathlib.Path(__file__).resolve().parent.parent / "assets"
+ASSETS = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "assets"
 
 # Defaults are SoFi; apply() rebinds them from the active company config so the
 # whole build retargets from one place. Module-level names are kept (rather than

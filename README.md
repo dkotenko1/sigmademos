@@ -20,6 +20,24 @@ It's the flagship, end-to-end builder and it *composes* the others for you (layo
 
 > ⚠️ **Common mistake:** driving a company build from `branded-dashboard-format` + the building blocks (naming them in your prompt). That produces a *generic* dashboard — no fetched logo, no bespoke plugin. Just say: **"Use `sigma-company-dashboard-v2` to build a Sigma workbook for [Company]."**
 
+## Quickstart (v2 generator)
+
+```bash
+cd skills/sigma-company-dashboard-v2
+cp .env.example .env            # fill in: CLI profile, write-capable connection id, folder id
+python3 scripts/doctor.py arch  # env, ids, hosted plugins, logo/SQL assets -- prints the fix for each failure
+python3 scripts/demo.py arch --dry-run   # doctor + server-side verify, creates nothing
+python3 scripts/demo.py arch             # doctor -> verify -> create -> screenshots in shots/arch/
+python3 scripts/demo.py arch --copy      # side-by-side copy; tracked workbook ids/state untouched
+python3 scripts/demo.py arch --update <workbookId> --surfaces command,model
+python3 scripts/selftest.py     # offline checks (also run in CI)
+```
+
+* New customer = one file in `skills/sigma-company-dashboard-v2/companies/` (see its README); no edits to the generator.
+* The AI-insight tile defaults to a live **formula takeaway**. `CallText`/Cortex returns N/A on several orgs;
+  set `"insight_mode": "ai"` in a company config to opt back in.
+* Compare two renders: `python3 scripts/shot.py compare shots/a shots/b out.html`.
+
 ## Skills
 
 | Skill | What it does | Dependencies |

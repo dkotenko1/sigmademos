@@ -271,7 +271,7 @@ Then:
 ## 5a. `update` refuses to silently overwrite a hand-edited workbook
 
 **The problem this closes:** Sigma's spec API has no partial update — every
-`PUT /v2/workbooks/{id}/spec` sends the COMPLETE representation. If a real
+`PUT /v2/workbooks/{id}/contents` sends the COMPLETE representation. If a real
 person opens the workbook and hides a column, resizes something, or adds a
 filter via the UI, then someone re-runs `build_sofi.py update` afterward
 (the normal "reprompt to make a change" workflow), that full-overwrite push
@@ -311,7 +311,7 @@ makes on purpose, not something that happens silently.
 **When the refusal fires, don't just re-run with `FORCE=1`.** The gate only
 tells you *that* the live workbook moved and *who*/*when* — it doesn't show
 you *what* changed. Before deciding, actually pull the live spec
-(`S.get_workbook(workbook_id)`, which calls `GET /v2/workbooks/{id}/spec`)
+(`S.get_workbook(workbook_id)`, which calls `GET /v2/workbooks/{id}?includeContents=true`)
 and skim it for what's different from what `company.py` would generate, so
 FORCE is an informed decision instead of a reflex to unblock yourself. This is
 the same "pull the latest version before you start reasoning about changes"
@@ -374,7 +374,7 @@ Offer these as multi-select, then run the matching commands:
 ## 6. Verified API facts (this is the expensive knowledge)
 
 ### `verify` passing means nothing
-`POST /v2/workbooks/spec/verify` skips SQL resolution, dangling element ids,
+`POST /v2/workbooks with `"dryRun": true`` skips SQL resolution, dangling element ids,
 duplicate ids, layout placement and workspace feature flags. It has passed while
 `create` failed on all of those. **Always create or update to validate.**
 
@@ -424,8 +424,8 @@ All verified on staging 9–10 Aug 2026.
    validates; the runtime still enforces draft-only.
 
 ### Other verified facts
-- `POST /v2/workbooks/spec`, `PUT /v2/workbooks/{id}/spec`,
-  `GET /v2/workbooks/{id}/spec`, `POST /v2/workbooks/spec/verify`
+- `POST /v2/workbooks`, `PUT /v2/workbooks/{id}/contents`,
+  `GET /v2/workbooks/{id}?includeContents=true`, `POST /v2/workbooks with `"dryRun": true``
 - **`DELETE /v2/workbooks/{id}` returns 404 on staging. `DELETE /v2/files/{id}`
   works.**
 - `image` requires `source: {kind: "url", url}` — the skill docs wrongly show a
@@ -706,3 +706,25 @@ KPIs) was reverse-engineered from demeng's Marketing Control Center.
   without being told to.
 - Delete workbooks **only by explicit tracked ID**, never by name pattern.
   `papercranestaging` is shared.
+
+
+## Running demos: fast path and lessons (2026-11)
+
+**Fast path:** `scripts/doctor.py <company>` then `scripts/demo.py <company> [--copy|--update <id>] [--surfaces ...]`.
+Configuration lives in `.env` (copy `.env.example`); there are deliberately no built-in org ids, so a stale default can
+never point a build at someone else's org.
+
+**Lessons that cost real time:**
+
+1. **A plugin repointed live must also be repointed in `company.py`.** A workbook was moved to the hosted plugin in the
+   UI/API but `PLUGINS[key]["hero"]` still held the `localhost:8571` id; the next rebuild reintroduced it and the headless
+   page export then hung for 7+ minutes. `doctor.py` now fails on any registered plugin whose URL is localhost.
+2. **`create` overwrites `specs/workbook_id.txt` and `wb_state_<key>.json`.** For a throwaway/side-by-side copy use
+   `demo.py --copy` (or `NO_STATE=1`), which leaves the tracked workbook and its edited-in-UI guard alone.
+3. **`CallText("SNOWFLAKE.CORTEX.COMPLETE", ...)` returned N/A for every model tried** on both the paperbricks and
+   sigma-csm-team orgs (headless export; not verified in the live UI). The generator therefore defaults to the formula
+   takeaway (`insight_mode` unset/`"formula"`).
+4. **Do not copy the generator into each project.** Per-project copies drifted ~900 lines behind and each needed a
+   hand port. Keep customers in `companies/*.py`, or point `COMPANIES_DIR` at a folder outside the repo.
+5. **A 3-way textual merge of `company.py` scrambles the accessor functions.** Rebuild it as new `company.py` + the
+   customer's top-level block instead (this is what the `companies/` loader makes unnecessary).

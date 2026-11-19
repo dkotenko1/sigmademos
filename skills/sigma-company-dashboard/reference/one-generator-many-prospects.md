@@ -112,7 +112,7 @@ underlying column names are fixed contract.
 
 **Regenerating destroys UI-built work.** Page headers (`panels`), true repeated
 containers and API actions are UI-only, and a full spec `PUT` wipes them. Either
-build those last, or work additively off `GET /spec`.
+build those last, or work additively off `GET ...?includeContents=true`.
 
 Worked reference: `~/Desktop/Prospects/SoFi-2026/scripts/company.py`.
 

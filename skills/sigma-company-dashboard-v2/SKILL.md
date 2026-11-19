@@ -4,7 +4,7 @@ description: >-
   START HERE — the FLAGSHIP end-to-end generator for a branded Sigma workbook
   (command center + scenario modeler + cohort builder), PLUS a pixel-perfect
   PDF report, for a NAMED company or prospect, via the workbooks-as-code API
-  (POST /v2/workbooks/spec, POST /v2/reports/spec). ONE company config dict
+  (POST /v2/workbooks, POST /v2/reports). ONE company config dict
   drives EVERYTHING — the builder scripts (scripts/build_sofi.py,
   scripts/build_statement.py) are never edited per prospect. Supports building
   only a subset of surfaces (SURFACES=command / command,model / command,cohort
@@ -18,8 +18,8 @@ description: >-
 > **API update 2026-11-17 (Sigma agent-skills v1.0.0 alignment).** Workbooks and reports are now created with
 > `POST /v2/workbooks` / `POST /v2/reports` (body `{name, folderId, contents}`), validated with `"dryRun": true`,
 > read with `GET …?includeContents=true`, and updated with `PUT …/{id}/contents` (`{contents, documentVersion?}`).
-> The `/spec` paths named below are the legacy endpoints; `scripts/sigmaapi.py` (and the `_wb_body` helper in each
-> example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
+> Endpoints below use the contents API. Older gotchas in this file may still say `/spec` (the legacy path);
+> `scripts/sigmaapi.py` (and the `_wb_body` helper in each example) translate the old `{document: …}` envelope automatically. Elements are flat `contents.elements[]`;
 > modal/drawer pages are `contents.overlays[]`; `themeOverrides` is `settings.theme.overrides`.
 
 

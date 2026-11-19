@@ -30,8 +30,8 @@ ST_ = lambda k: CO.statement(CFG, k)
 # company already ships, so overriding them is opt-in per company.
 STO_ = lambda k, d: CO.statement_opt(CFG, k, d)
 
-SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
-SPECS = pathlib.Path(__file__).resolve().parent.parent / "specs"
+SQL = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "sql"
+SPECS = pathlib.Path(os.environ.get("SIGMA_PROJECT_DIR") or pathlib.Path(__file__).resolve().parent.parent) / "specs"
 SPECS.mkdir(parents=True, exist_ok=True)
 
 PAGE_W, PAGE_H = 816, 1056        # US Letter portrait @ 96dpi

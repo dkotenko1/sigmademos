@@ -4357,3 +4357,33 @@ STATEMENTS["arch"] = {
     "footer": ("Illustrative statement generated from a Sigma report "
                "specification - synthetic data, not Arch actual results."),
 }
+
+
+# ---------------------------------------------------------------------------
+# External company configs: ../companies/*.py
+#
+# Drop a file there per customer instead of editing this module. Each file is
+# executed in THIS module's namespace after everything above is defined, so it
+# can use the helpers and registries directly:
+#
+#     MYCO = {"key": "myco", "name": "MyCo", ...}
+#     FOOTPRINTS["myco"] = [...]; LABELS["myco"] = {...}; PLUGINS["myco"] = {...}
+#     COMPANIES["myco"] = MYCO
+#
+# Files starting with "_" are skipped. COMPANIES_DIR overrides the folder; with
+# SIGMA_PROJECT_DIR set the default is <project>/companies.
+# See companies/README.md.
+# ---------------------------------------------------------------------------
+import os as _os
+import pathlib as _pl
+
+_PROJECT = _pl.Path(_os.environ.get("SIGMA_PROJECT_DIR") or _pl.Path(__file__).resolve().parent.parent)
+_COMPANIES_DIR = _pl.Path(_os.environ.get("COMPANIES_DIR") or _PROJECT / "companies")
+LOADED_EXTERNAL = []
+if _COMPANIES_DIR.is_dir():
+    for _f in sorted(_COMPANIES_DIR.glob("*.py")):
+        if _f.name.startswith("_"):
+            continue
+        exec(compile(_f.read_text(), str(_f), "exec"), globals())
+        LOADED_EXTERNAL.append(_f.name)
+

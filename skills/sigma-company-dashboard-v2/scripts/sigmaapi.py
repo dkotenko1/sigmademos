@@ -22,23 +22,71 @@ import os
 import urllib.error
 import urllib.request
 
+def _load_dotenv():
+    """Load KEY=VALUE lines from the first .env found ($SIGMA_PROJECT_DIR, scripts/.env,
+    the skill folder, the repo root, then the cwd). Real environment variables win."""
+    here = pathlib.Path(__file__).resolve().parent
+    proj = os.environ.get("SIGMA_PROJECT_DIR")
+    for d in ([pathlib.Path(proj)] if proj else []) + [here, here.parent, here.parent.parent.parent, pathlib.Path.cwd()]:
+        f = d / ".env"
+        if f.is_file():
+            for line in f.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+            return str(f)
+    return None
+
+
+DOTENV = _load_dotenv()
+
 CLI = pathlib.Path(os.environ.get("SIGMA_CLI_BIN")
                     or (pathlib.Path.home() / ".sigma-cli" / "bin" / "sigma"))
-PROFILE = os.environ.get("SIGMA_CLI_PROFILE", "papercranestaging")
+# Unset -> the CLI's own default profile (`sigma auth set-default`).
+PROFILE = os.environ.get("SIGMA_CLI_PROFILE") or None
 
-# These three are org-specific and MUST be overridden via .env for any org
-# other than Connor's own papercranestaging (never commit real values for a
-# different org into these fallbacks — .env is gitignored, this file is not).
-ORG_ID = os.environ.get("SIGMA_ORG_ID", "8c99818a-90b3-4cae-bdb7-cf69a741171a")
 
-# Discovered 2026-08-07 on papercranestaging.
-FOLDER_CLAUDE_BUILDER = os.environ.get("SIGMA_FOLDER_ID", "a758d7ee-8c23-423d-9d60-5b635d9e9b58")
+def _profile_args():
+    return ["-p", PROFILE] if PROFILE else []
 
-# Most staging connections have disabled warehouse credentials. This one resolves
-# SQL at create time; it is also what the reference "Microsoft — Executive App"
-# workbook uses. `verify` does NOT resolve SQL, so a bad connection only surfaces
-# on create.
-CONN_SNOWFLAKE = os.environ.get("SIGMA_CONNECTION_ID", "a9d45cfe-ff65-4515-8193-a7072602a1ee")
+
+# Org-specific ids. There are deliberately NO built-in fallbacks: a stale default
+# silently pointed builds at someone else's org. Set them in .env (see
+# .env.example) or the environment; `python3 scripts/doctor.py` checks them.
+_REQUIRED = {
+    "CONN_SNOWFLAKE": ("SIGMA_CONNECTION_ID",
+                       "a WRITE-capable warehouse connection id (GET /v2/connections)"),
+    "FOLDER_CLAUDE_BUILDER": ("SIGMA_FOLDER_ID",
+                              "the destination folder id (My Documents/<folder>)"),
+    "ORG_ID": ("SIGMA_ORG_ID", "your organization id (GET /v2/whoami)"),
+}
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def __getattr__(name):
+    """Lazy module attributes: required ids raise a helpful error only when a
+    build actually needs them, and BASE is resolved on first use so the module
+    imports without a CLI (tests, CI)."""
+    if name in _REQUIRED:
+        env, what = _REQUIRED[name]
+        val = os.environ.get(env)
+        if not val:
+            raise ConfigError(
+                "%s is not set. Add %s=<%s> to .env (copy .env.example) or export "
+                "it. Run `python3 scripts/doctor.py` to check your setup." % (env, env, what))
+        return val
+    if name == "BASE":
+        globals()["BASE"] = base = "https://" + _api_host()
+        return base
+    raise AttributeError(name)
+
+
+def _base():
+    return __getattr__("BASE") if "BASE" not in globals() else globals()["BASE"]
 
 
 class SigmaError(RuntimeError):
@@ -97,7 +145,7 @@ def _require_cli():
 def _run(args, url_for_error):
     """Run `sigma -p PROFILE api <args>`; return parsed stdout JSON on success."""
     _require_cli()
-    proc = subprocess.run([str(CLI), "-p", PROFILE, "api", *args],
+    proc = subprocess.run([str(CLI), *_profile_args(), "api", *args],
                            capture_output=True, text=True, timeout=180)
     if proc.returncode != 0:
         err_cls = _EXIT_ERRORS.get(proc.returncode, SigmaAPIError)
@@ -123,18 +171,18 @@ def token():
     global _token_cache
     if _token_cache is None:
         _require_cli()
-        proc = subprocess.run([str(CLI), "-p", PROFILE, "auth", "token"],
+        proc = subprocess.run([str(CLI), *_profile_args(), "auth", "token"],
                               capture_output=True, text=True, timeout=40)
         if proc.returncode != 0:
             raise SigmaAuthError(401, proc.stdout or proc.stderr,
-                                 "sigma auth token -p %s" % PROFILE)
+                                 "sigma auth token -p %s" % (PROFILE or "<default>"))
         _token_cache = proc.stdout.strip()
     return _token_cache
 
 
 def _api_host():
     _require_cli()
-    proc = subprocess.run([str(CLI), "-p", PROFILE, "auth", "status"],
+    proc = subprocess.run([str(CLI), *_profile_args(), "auth", "status"],
                           capture_output=True, text=True, timeout=40)
     # `auth status` writes its human-readable report to stderr, not stdout.
     combined = proc.stdout + proc.stderr
@@ -144,19 +192,9 @@ def _api_host():
             401,
             "sigma CLI profile %r is not authenticated (or is missing).\n"
             "Run: sigma auth login -p %s\n\n--- sigma auth status output ---\n%s"
-            % (PROFILE, PROFILE, combined.strip()),
-            "sigma auth status -p %s" % PROFILE)
+            % (PROFILE or "<name>", PROFILE or "<name>", combined.strip()),
+            "sigma auth status -p %s" % (PROFILE or "<default>"))
     return m.group(1)
-
-
-try:
-    BASE = "https://" + _api_host()
-except SigmaAuthError as exc:
-    raise SigmaAuthError(
-        exc.status,
-        "sigmaapi could not initialize — sigma CLI profile %r is not ready.\n"
-        "Run: sigma auth login -p %s\n\n%s" % (PROFILE, PROFILE, exc.body),
-        exc.url) from None
 
 
 # ---------------------------------------------------------------- workbooks
@@ -306,7 +344,7 @@ def call(method, path, body=None, accept="application/json", retry_auth=True):
 
 
 def _raw_call(method, path, body=None):
-    url = BASE + path
+    url = _base() + path
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Authorization": "Bearer " + token(), "Accept": "application/json"}
     if data is not None:
